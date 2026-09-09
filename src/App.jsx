@@ -271,7 +271,7 @@ export default function App() {
           {tab === "accounts" && role === "owner" && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "expenses" && role === "owner" && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "affiliates" && role === "owner" && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
-          {tab === "team" && role === "owner" && <Team notify={notify} currentUserId={user.id} />
+          {tab === "team" && role === "owner" && <Team notify={notify} currentUserId={user.id} />}
         </div>
       </div>
 
