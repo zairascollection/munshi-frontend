@@ -3,7 +3,7 @@
 // Set VITE_API_BASE_URL in your .env (e.g. https://api.zairascollection.com)
 // when building with Vite. If you're using a different bundler, swap the
 // `BASE_URL` line below for however your tooling exposes env vars.
-const BASE_URL = (import.meta?.env?.VITE_API_BASE_URL) || "http://localhost:4000";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 const TOKEN_KEY = "munshi_token";
 
