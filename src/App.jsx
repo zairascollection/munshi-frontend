@@ -3,14 +3,14 @@ import {
   LayoutGrid, Boxes, Truck, Users, Wallet, Share2, Plus, Trash2,
   TrendingUp, TrendingDown, AlertTriangle, Search, X, ChevronRight,
   BarChart3, ImageIcon, ShieldCheck, User, Receipt, Minus, Printer, BookUser,
-  Landmark, ScanLine, LogOut, RefreshCw,
+  Landmark, ScanLine, LogOut, RefreshCw, Pencil,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import Login from "./Login";
-import { api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser } from "./api";
+import { api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser, changePassword, getUserProfile, getMonthlyReport, getAvailableMonths, fileToBase64 } from "./api";
 
 const COLORS = {
   bg: "#0F161F",
@@ -78,6 +78,9 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [data, setData] = useState({ inventory: [], orders: [], employees: [], affiliates: [], accounts: [], expenses: [] });
   const [toast, setToast] = useState(null);
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [monthlyReport, setMonthlyReport] = useState(null);
   const [syncing, setSyncing] = useState(false);
 
   const notify = (msg) => {
@@ -167,12 +170,61 @@ export default function App() {
     setSyncing(true);
     try {
       const res = await syncWooCommerce();
-      notify(`Synced ${res.ordersSynced} order(s) from WooCommerce`);
+      notify(
+        res.affiliates && !res.affiliates.skipped
+          ? `Synced ${res.ordersSynced} order(s), ${res.affiliates.synced} affiliate(s)`
+          : `Synced ${res.ordersSynced} order(s) from WooCommerce`
+      );
       await loadAll(role);
     } catch (err) {
       notify(`Sync failed: ${err.message}`);
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleChangePassword = async (oldPassword, newPassword) => {
+    try {
+      await changePassword(oldPassword, newPassword);
+      notify("✅ Password changed successfully");
+      setShowPasswordChange(false);
+    } catch (err) {
+      notify(`❌ Password change failed: ${err.message}`);
+    }
+  };
+
+  const loadMonthlyReport = async (month) => {
+    try {
+      const report = await getMonthlyReport(month);
+      setMonthlyReport(report);
+      setSelectedMonth(month);
+    } catch (err) {
+      notify(`Failed to load report: ${err.message}`);
+    }
+  };
+
+  const handleImageUpload = async (file) => {
+    try {
+      const base64 = await fileToBase64(file);
+      return base64;
+    } catch (err) {
+      notify(`Image upload failed: ${err.message}`);
+      return null;
+    }
+  };
+
+  const syncAffiliatesFromWebsite = async () => {
+    try {
+      notify("Syncing affiliates from website...");
+      const res = await syncWooCommerce();
+      if (res?.affiliates?.synced > 0) {
+        notify(`✅ Synced ${res.affiliates.synced} affiliate(s)`);
+        await loadAll(role);
+      } else {
+        notify("No new affiliates to sync");
+      }
+    } catch (err) {
+      notify(`Sync failed: ${err.message}`);
     }
   };
 
@@ -259,27 +311,76 @@ export default function App() {
       <Sidebar tab={tab} setTab={setTab} metrics={metrics} role={role} user={user} onLogout={logout} onSync={runSync} syncing={syncing} />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <TopBar tab={tab} role={role} />
+        <TopBar tab={tab} role={role} onPasswordClick={() => setShowPasswordChange(true)} />
         <div className="mn-scroll" style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
           {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} />}
           {tab === "pos" && <POS data={data} update={update} notify={notify} />}
-          {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
+          {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} onImageUpload={handleImageUpload} />}
           {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
-          {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
-          {tab === "reports" && <Reports data={data} />}
+          {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} onImageUpload={handleImageUpload} />}
+          {tab === "reports" && <Reports data={data} selectedMonth={selectedMonth} setSelectedMonth={loadMonthlyReport} monthlyReport={monthlyReport} />}
           {tab === "finance" && role === "owner" && <Finance data={data} metrics={metrics} />}
           {tab === "accounts" && role === "owner" && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "expenses" && role === "owner" && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
-          {tab === "affiliates" && role === "owner" && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
+          {tab === "affiliates" && role === "owner" && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} onSync={syncAffiliatesFromWebsite} />}
           {tab === "team" && role === "owner" && <Team notify={notify} currentUserId={user.id} />}
         </div>
       </div>
+
+      {showPasswordChange && (
+        <PasswordChangeModal onClose={() => setShowPasswordChange(false)} onSubmit={handleChangePassword} />
+      )}
 
       {toast && (
         <div style={{ position: "absolute", bottom: 20, right: 20, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: "10px 16px", borderRadius: 8, fontSize: 13 }}>
           {toast}
         </div>
       )}
+    </div>
+  );
+}
+
+function PasswordChangeModal({ onClose, onSubmit }) {
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!oldPassword || !newPassword) {
+      alert("Please fill in all fields");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      alert("Passwords don't match");
+      return;
+    }
+    if (newPassword.length < 6) {
+      alert("New password must be at least 6 characters");
+      return;
+    }
+    setLoading(true);
+    try {
+      await onSubmit(oldPassword, newPassword);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 24, maxWidth: 400, width: "90%" }}>
+        <h3 style={{ margin: "0 0 16px", color: COLORS.text }}>Change Password</h3>
+        <input type="password" placeholder="Current password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} className="mn-input" style={{ marginBottom: 12 }} />
+        <input type="password" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="mn-input" style={{ marginBottom: 12 }} />
+        <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className="mn-input" style={{ marginBottom: 16 }} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClose} style={{ flex: 1, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: 10, borderRadius: 6, cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSubmit} disabled={loading} style={{ flex: 1, background: COLORS.accent, border: "none", color: "#241804", padding: 10, borderRadius: 6, cursor: "pointer", fontWeight: 600 }}>
+            {loading ? "..." : "Change"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -346,7 +447,7 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing }
   );
 }
 
-function TopBar({ tab, role }) {
+function TopBar({ tab, role, onPasswordClick }) {
   const label = NAV.find((n) => n.id === tab)?.label || "";
   const date = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   return (
@@ -355,7 +456,12 @@ function TopBar({ tab, role }) {
         <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 600, margin: 0 }}>{label}</h2>
         <Badge text={role === "owner" ? "Owner view" : "Staff view"} tone={role === "owner" ? "accent" : "info"} />
       </div>
-      <span style={{ fontSize: 12.5, color: COLORS.textFaint }}>{date}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <span style={{ fontSize: 12.5, color: COLORS.textFaint }}>{date}</span>
+        <button onClick={onPasswordClick} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textDim, fontSize: 12 }}>
+          🔐 Change Password
+        </button>
+      </div>
     </div>
   );
 }
@@ -481,8 +587,10 @@ function Panel({ title, count, onAdd, addLabel, children, extra }) {
   );
 }
 
-function AddForm({ fields, onCancel, onSave, title }) {
-  const [vals, setVals] = useState(() => Object.fromEntries(fields.map((f) => [f.key, f.default ?? ""])));
+function AddForm({ fields, onCancel, onSave, title, initialValues }) {
+  const [vals, setVals] = useState(() =>
+    Object.fromEntries(fields.map((f) => [f.key, initialValues?.[f.key] ?? f.default ?? ""]))
+  );
   const set = (k, v) => setVals((s) => ({ ...s, [k]: v }));
   const submit = () => {
     for (const f of fields) {
@@ -490,6 +598,30 @@ function AddForm({ fields, onCancel, onSave, title }) {
     }
     onSave(vals);
   };
+
+  // Resizes/compresses the picked image in the browser and turns it into a
+  // base64 data URL, which is stored directly in the existing `image` text
+  // column — no file storage server needed for a small product catalog.
+  const handleImageFile = (key, file) => {
+    if (!file) return;
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      img.onload = () => {
+        const maxDim = 600;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        set(key, canvas.toDataURL("image/jpeg", 0.75));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
   return (
     <div style={{ padding: 18, borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface2 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -504,6 +636,15 @@ function AddForm({ fields, onCancel, onSave, title }) {
               <select className="mn-input" value={vals[f.key]} onChange={(e) => set(f.key, e.target.value)}>
                 {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
+            ) : f.type === "file" ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Thumb url={vals[f.key]} />
+                <input
+                  type="file" accept="image/*"
+                  onChange={(e) => handleImageFile(f.key, e.target.files[0])}
+                  style={{ fontSize: 11, color: COLORS.textDim, maxWidth: 130 }}
+                />
+              </div>
             ) : (
               <input
                 className="mn-input"
@@ -537,20 +678,22 @@ function Thumb({ url }) {
   );
 }
 
-function Inventory({ items, update, notify, role }) {
+function Inventory({ items, update, notify, role, onImageUpload }) {
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [q, setQ] = useState("");
   const isOwner = role === "owner";
   const filtered = items.filter((i) => (i.name + i.sku + i.category).toLowerCase().includes(q.toLowerCase()));
+  const editingItem = items.find((i) => i.id === editingId);
 
-  const fields = [
+  const baseFields = [
     { key: "name", label: "Item name", required: true },
     { key: "sku", label: "SKU", required: true },
     { key: "category", label: "Category", type: "select", options: ["Unstitched", "Stitched", "Best Sellers", "New Arrivals", "Summer", "Winter", "Sale"] },
-    { key: "image", label: "Image URL (optional)", placeholder: "https://..." },
+    { key: "image", label: "Photo (optional)", type: "file" },
     { key: "quantity", label: "Quantity", type: "number", default: 0 },
     { key: "reorder", label: "Reorder level", type: "number", default: 5 },
-    { key: "cost", label: "Cost price (Rs)", type: "number", default: 0 },
+    ...(isOwner ? [{ key: "cost", label: "Cost price (Rs)", type: "number", default: 0 }] : []),
     { key: "price", label: "Selling price (Rs)", type: "number", default: 0 },
   ];
 
@@ -562,17 +705,30 @@ function Inventory({ items, update, notify, role }) {
     >
       {adding && (
         <AddForm
-          title="New inventory item" fields={fields} onCancel={() => setAdding(false)}
+          title="New inventory item" fields={baseFields} onCancel={() => setAdding(false)}
           onSave={(v) => {
-            update((list) => [...list, { id: genId(), ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: Number(v.cost), price: Number(v.price) }]);
+            update((list) => [...list, { id: genId(), ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: Number(v.cost || 0), price: Number(v.price) }]);
             setAdding(false);
             notify("Item added");
           }}
         />
       )}
+      {editingItem && (
+        <AddForm
+          title={`Edit — ${editingItem.name}`} fields={baseFields} initialValues={editingItem} onCancel={() => setEditingId(null)}
+          onSave={(v) => {
+            update((list) => list.map((x) => x.id === editingId
+              ? { ...x, ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: isOwner ? Number(v.cost || 0) : x.cost, price: Number(v.price) }
+              : x
+            ));
+            setEditingId(null);
+            notify("Item updated");
+          }}
+        />
+      )}
       {filtered.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : (
         <table className="mn-table">
-          <thead><tr><th></th><th>Item</th><th>SKU</th><th>Category</th><th>Qty</th>{isOwner && <th>Cost</th>}<th>Price</th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th></th><th>Item</th><th>SKU</th><th>Category</th><th>Qty</th>{isOwner && <th>Cost</th>}<th>Price</th><th></th></tr></thead>
           <tbody>
             {filtered.map((i) => {
               const low = Number(i.quantity) <= Number(i.reorder);
@@ -585,7 +741,12 @@ function Inventory({ items, update, notify, role }) {
                   <td className="mn-num" style={{ color: low ? COLORS.negative : COLORS.text }}>{i.quantity}{low && " ⚠"}</td>
                   {isOwner && <td className="mn-num">{fmt(i.cost)}</td>}
                   <td className="mn-num">{fmt(i.price)}</td>
-                  {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== i.id))} /></td>}
+                  <td style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                    <button onClick={() => setEditingId(i.id)} title="Edit" style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}>
+                      <Pencil size={14} />
+                    </button>
+                    {isOwner && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== i.id))} />}
+                  </td>
                 </tr>
               );
             })}
@@ -715,12 +876,13 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
   );
 }
 
-function Employees({ employees, accounts, update, updateAccounts, notify, role }) {
+function Employees({ employees, accounts, update, updateAccounts, notify, role, onImageUpload }) {
   const [adding, setAdding] = useState(false);
   const isOwner = role === "owner";
   const fields = [
     { key: "name", label: "Name", required: true },
     { key: "role", label: "Role" },
+    { key: "image", label: "Photo (optional)", type: "file" },
     { key: "salary", label: "Monthly salary (Rs)", type: "number", default: 0 },
     { key: "phone", label: "Phone" },
     { key: "joined", label: "Join date", type: "date", default: todayISO() },
@@ -780,7 +942,7 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
   );
 }
 
-function Affiliates({ affiliates, accounts, update, updateAccounts, notify }) {
+function Affiliates({ affiliates, accounts, update, updateAccounts, notify, onSync }) {
   const [adding, setAdding] = useState(false);
   const fields = [
     { key: "name", label: "Affiliate / partner", required: true },
@@ -800,7 +962,15 @@ function Affiliates({ affiliates, accounts, update, updateAccounts, notify }) {
   };
 
   return (
-    <Panel title="Affiliates" addLabel="Add affiliate" onAdd={() => setAdding(true)} count={`${affiliates.length} partners`}>
+    <>
+      {onSync && (
+        <div style={{ marginBottom: 12 }}>
+          <button onClick={onSync} style={{ background: COLORS.accent, color: "#241804", border: "none", padding: "8px 16px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+            🔄 Sync from Website
+          </button>
+        </div>
+      )}
+      <Panel title="Affiliates" addLabel="Add affiliate" onAdd={() => setAdding(true)} count={`${affiliates.length} partners`}>
       {adding && (
         <AddForm
           title="New affiliate" fields={fields} onCancel={() => setAdding(false)}
@@ -812,34 +982,53 @@ function Affiliates({ affiliates, accounts, update, updateAccounts, notify }) {
         />
       )}
       {affiliates.length === 0 ? <EmptyRow text="Koi affiliate add nahi hua." /> : (
-        <table className="mn-table">
-          <thead><tr><th>Partner</th><th>Platform</th><th>Rate</th><th>Sales</th><th>Commission</th><th>Status</th><th>Payment</th><th></th></tr></thead>
-          <tbody>
-            {affiliates.map((a) => (
-              <tr key={a.id}>
-                <td>{a.name}</td>
-                <td style={{ color: COLORS.textDim }}>{a.platform}</td>
-                <td className="mn-num">{a.rate}%</td>
-                <td className="mn-num">{fmt(a.sales)}</td>
-                <td className="mn-num">{fmt(a.commission)}</td>
-                <td><Badge text={a.status} tone={a.status === "Active" ? "info" : undefined} /></td>
-                <td>
-                  {a.payment === "Paid" ? (
-                    <button onClick={() => markPending(a)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text="Paid" tone="positive" /></button>
-                  ) : (
-                    <select className="mn-input" style={{ fontSize: 11, padding: "4px 6px", width: 130 }} value="" onChange={(ev) => { if (ev.target.value) markPaid(a, ev.target.value); }}>
-                      <option value="">Pay from...</option>
-                      {(accounts || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-                    </select>
-                  )}
-                </td>
-                <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== a.id))} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table className="mn-table">
+            <thead><tr><th>Partner</th><th>Platform</th><th>Rate</th><th>Sales</th><th>Commission</th><th>Net profit</th><th>Status</th><th>Payment</th><th></th></tr></thead>
+            <tbody>
+              {affiliates.map((a) => {
+                const netProfit = Number(a.sales || 0) - Number(a.commission || 0);
+                return (
+                  <tr key={a.id}>
+                    <td>{a.name}</td>
+                    <td style={{ color: COLORS.textDim }}>{a.platform}</td>
+                    <td className="mn-num">{a.rate}%</td>
+                    <td className="mn-num">{fmt(a.sales)}</td>
+                    <td className="mn-num">{fmt(a.commission)}</td>
+                    <td className="mn-num" style={{ color: netProfit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(netProfit)}</td>
+                    <td><Badge text={a.status} tone={a.status === "Active" ? "info" : undefined} /></td>
+                    <td>
+                      {a.payment === "Paid" ? (
+                        <button onClick={() => markPending(a)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text="Paid" tone="positive" /></button>
+                      ) : (
+                        <select className="mn-input" style={{ fontSize: 11, padding: "4px 6px", width: 130 }} value="" onChange={(ev) => { if (ev.target.value) markPaid(a, ev.target.value); }}>
+                          <option value="">Pay from...</option>
+                          {(accounts || []).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                        </select>
+                      )}
+                    </td>
+                    <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== a.id))} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {(() => {
+            const totalSales = affiliates.reduce((s, a) => s + Number(a.sales || 0), 0);
+            const totalCommission = affiliates.reduce((s, a) => s + Number(a.commission || 0), 0);
+            const totalNet = totalSales - totalCommission;
+            return (
+              <div style={{ display: "flex", gap: 24, padding: "12px 18px", borderTop: `1px solid ${COLORS.borderSoft}`, fontSize: 12.5 }}>
+                <span style={{ color: COLORS.textFaint }}>Total sales: <b style={{ color: COLORS.text }}>{fmt(totalSales)}</b></span>
+                <span style={{ color: COLORS.textFaint }}>Total commission: <b style={{ color: COLORS.text }}>{fmt(totalCommission)}</b></span>
+                <span style={{ color: COLORS.textFaint }}>Net profit: <b style={{ color: totalNet >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(totalNet)}</b></span>
+              </div>
+            );
+          })()}
+        </>
       )}
     </Panel>
+    </>
   );
 }
 
@@ -1402,7 +1591,7 @@ function ChartCard({ title, children, height = 260 }) {
   );
 }
 
-function Reports({ data }) {
+function Reports({ data, selectedMonth, setSelectedMonth, monthlyReport }) {
   const byDate = useMemo(() => {
     const map = {};
     data.orders.forEach((o) => {
@@ -1436,6 +1625,38 @@ function Reports({ data }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Monthly Reports Section */}
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 14, fontWeight: 600, color: COLORS.text }}>Monthly Report</h3>
+        <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center" }}>
+          <input type="month" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="mn-input" style={{ width: 150 }} />
+          {monthlyReport && (
+            <div style={{ display: "flex", gap: 16, flex: 1 }}>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textFaint }}>Revenue</div>
+                <div className="mn-num" style={{ fontSize: 16, color: COLORS.positive }}>{fmt(monthlyReport.summary.totalRevenue)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textFaint }}>Expenses</div>
+                <div className="mn-num" style={{ fontSize: 16, color: COLORS.negative }}>{fmt(monthlyReport.summary.totalExpenses)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textFaint }}>Profit</div>
+                <div className="mn-num" style={{ fontSize: 16, color: monthlyReport.summary.netProfit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(monthlyReport.summary.netProfit)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textFaint }}>Margin</div>
+                <div className="mn-num" style={{ fontSize: 16, color: COLORS.info }}>{monthlyReport.summary.margin}%</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textFaint }}>Affiliates</div>
+                <div className="mn-num" style={{ fontSize: 16, color: COLORS.accent }}>{fmt(monthlyReport.affiliates.totalCommission)}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       <ChartCard title="Revenue & profit trend">
         {!hasOrders ? <EmptyRow text="Chart k liye orders add karein." /> : (
           <ResponsiveContainer width="100%" height="100%">
