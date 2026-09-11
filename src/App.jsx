@@ -204,7 +204,10 @@ export default function App() {
       data.affiliates.filter((a) => a.payment === "Pending").reduce((s, a) => s + Number(a.commission || 0), 0);
     const lowStock = data.inventory.filter((i) => Number(i.quantity) <= Number(i.reorder));
     const activeParcels = data.orders.filter((o) => o.status === "Pending" || o.status === "Shipped").length;
-    return { revenue, cogs, grossProfit, salaries, commissions, totalExpenses, netProfit, receivable, payable, lowStock, activeParcels, totalBalance };
+    const stockInvestment = data.inventory.reduce((s, i) => s + Number(i.cost || 0) * Number(i.quantity || 0), 0);
+    const stockSaleValue = data.inventory.reduce((s, i) => s + Number(i.price || 0) * Number(i.quantity || 0), 0);
+    const stockUnits = data.inventory.reduce((s, i) => s + Number(i.quantity || 0), 0);
+    return { revenue, cogs, grossProfit, salaries, commissions, totalExpenses, netProfit, receivable, payable, lowStock, activeParcels, totalBalance, stockInvestment, stockSaleValue, stockUnits };
   }, [data]);
 
   if (!authChecked) {
@@ -402,8 +405,9 @@ function Badge({ text, tone }) {
 const orderStatusTone = { Pending: "accent", Shipped: "info", Delivered: "positive", Returned: "negative" };
 const paymentTone = { Paid: "positive", Partial: "accent", Pending: "negative" };
 
-function Dashboard({ data, metrics, setTab }) {
+function Dashboard({ data, metrics, setTab, role }) {
   const recentOrders = [...data.orders].slice(-5).reverse();
+  const isOwner = role === "owner";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
@@ -414,6 +418,8 @@ function Dashboard({ data, metrics, setTab }) {
         <StatCard label="Pending to pay" value={fmt(metrics.payable)} tone="negative" sub="Salaries + commissions" />
         <StatCard label="Active parcels" value={metrics.activeParcels} sub="In transit or pending" />
         <StatCard label="Low stock items" value={metrics.lowStock.length} tone={metrics.lowStock.length ? "negative" : undefined} />
+        {isOwner && <StatCard label="Stock investment" value={fmt(metrics.stockInvestment)} sub={`${metrics.stockUnits} units at cost price`} />}
+        {isOwner && <StatCard label="Stock value at sale price" value={fmt(metrics.stockSaleValue)} sub="If everything sells" />}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
@@ -585,14 +591,14 @@ function AddForm({ fields, onCancel, onSave, title, initialValues }) {
   );
 }
 
-function Thumb({ url }) {
+function Thumb({ url, size = 34 }) {
   const [broken, setBroken] = useState(false);
   return (
-    <div style={{ width: 34, height: 34, borderRadius: 6, overflow: "hidden", background: COLORS.surface2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+    <div style={{ width: size, height: size, borderRadius: 6, overflow: "hidden", background: COLORS.surface2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
       {url && !broken ? (
         <img src={url} onError={() => setBroken(true)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
-        <ImageIcon size={14} color={COLORS.textFaint} />
+        <ImageIcon size={Math.round(size * 0.4)} color={COLORS.textFaint} />
       )}
     </div>
   );
@@ -654,7 +660,7 @@ function Inventory({ items, update, notify, role }) {
               const low = Number(i.quantity) <= Number(i.reorder);
               return (
                 <tr key={i.id}>
-                  <td><Thumb url={i.image} /></td>
+                  <td><Thumb url={i.image} size={52} /></td>
                   <td>{i.name}</td>
                   <td style={{ color: COLORS.textFaint }}>{i.sku}</td>
                   <td style={{ color: COLORS.textDim }}>{i.category}</td>
