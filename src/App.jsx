@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, Fragment } from "react";
 import {
   LayoutGrid, Boxes, Truck, Users, Wallet, Share2, Plus, Trash2,
   TrendingUp, TrendingDown, AlertTriangle, Search, X, ChevronRight,
@@ -10,7 +10,7 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import Login from "./Login";
-import { api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser, changePassword } from "./api";
+import { api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser, changePassword, sendLowStockAlert } from "./api";
 
 const COLORS = {
   bg: "#0F161F",
@@ -53,6 +53,7 @@ const NAV = [
   { id: "pos", label: "POS / Billing", icon: Receipt, ownerOnly: false },
   { id: "inventory", label: "Inventory", icon: Boxes, ownerOnly: false },
   { id: "orders", label: "Orders & parcels", icon: Truck, ownerOnly: false },
+  { id: "customers", label: "Customers", icon: BookUser, ownerOnly: false },
   { id: "employees", label: "Employees", icon: Users, ownerOnly: false },
   { id: "reports", label: "Reports", icon: BarChart3, ownerOnly: false },
   { id: "finance", label: "Finance", icon: Wallet, ownerOnly: true },
@@ -269,10 +270,11 @@ export default function App() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <TopBar tab={tab} role={role} />
         <div className="mn-scroll" style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
-          {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} />}
-          {tab === "pos" && <POS data={data} update={update} notify={notify} />}
+          {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} notify={notify} />}
+          {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} />}
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
           {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
+          {tab === "customers" && <Customers orders={data.orders} />}
           {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
           {tab === "reports" && <Reports data={data} />}
           {tab === "finance" && role === "owner" && <Finance data={data} metrics={metrics} />}
@@ -405,9 +407,22 @@ function Badge({ text, tone }) {
 const orderStatusTone = { Pending: "accent", Shipped: "info", Delivered: "positive", Returned: "negative" };
 const paymentTone = { Paid: "positive", Partial: "accent", Pending: "negative" };
 
-function Dashboard({ data, metrics, setTab, role }) {
+function Dashboard({ data, metrics, setTab, role, notify }) {
   const recentOrders = [...data.orders].slice(-5).reverse();
   const isOwner = role === "owner";
+  const [sendingAlert, setSendingAlert] = useState(false);
+
+  const handleSendAlert = async () => {
+    setSendingAlert(true);
+    try {
+      const res = await sendLowStockAlert();
+      notify(res.sent ? `Alert sent (${res.count} item${res.count > 1 ? "s" : ""})` : res.reason || "Not sent");
+    } catch (err) {
+      notify(`Couldn't send alert: ${err.message}`);
+    } finally {
+      setSendingAlert(false);
+    }
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
@@ -446,7 +461,14 @@ function Dashboard({ data, metrics, setTab, role }) {
         </div>
 
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
-          <SectionHeading title="Low stock alerts" action={() => setTab("inventory")} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <SectionHeading title="Low stock alerts" action={() => setTab("inventory")} />
+            {isOwner && metrics.lowStock.length > 0 && (
+              <button className="mn-btn-ghost" disabled={sendingAlert} onClick={handleSendAlert} style={{ fontSize: 11, padding: "5px 9px" }}>
+                {sendingAlert ? "Sending..." : "Send alert (WhatsApp/SMS)"}
+              </button>
+            )}
+          </div>
           {metrics.lowStock.length === 0 ? (
             <EmptyRow text="Sab kuch stock mein hai." />
           ) : (
@@ -745,6 +767,12 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
   const cycleStatus = (o) => {
     const order = ["Pending", "Shipped", "Delivered", "Returned"];
     const next = order[(order.indexOf(o.status) + 1) % order.length];
+    if (next === "Returned") {
+      const reason = window.prompt("Return ki wajah likhein (size, quality, mind change, waghera):", "");
+      if (reason === null) return; // cancelled — leave status unchanged
+      update((list) => list.map((x) => (x.id === o.id ? { ...x, status: next, returnReason: reason } : x)));
+      return;
+    }
     update((list) => list.map((x) => (x.id === o.id ? { ...x, status: next } : x)));
   };
   const savePayment = (o, patch, accountId, delta) => {
@@ -769,7 +797,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
       )}
       {orders.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
         <table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Payment</th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Billed by</th><th>Payment</th>{isOwner && <th></th>}</tr></thead>
           <tbody>
             {orders.map((o) => {
               const pStatus = paymentStatusOf(o);
@@ -781,7 +809,11 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
                   <td style={{ color: COLORS.textDim }}>{o.product}{o.qty ? ` ×${o.qty}` : ""}</td>
                   <td className="mn-num">{fmt(o.sell)}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.courier || "—"}{o.tracking ? ` · ${o.tracking}` : ""}</td>
-                  <td><button onClick={() => cycleStatus(o)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text={o.status} tone={orderStatusTone[o.status]} /></button></td>
+                  <td>
+                    <button onClick={() => cycleStatus(o)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text={o.status} tone={orderStatusTone[o.status]} /></button>
+                    {o.status === "Returned" && o.returnReason && <div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 3 }}>{o.returnReason}</div>}
+                  </td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.billedBy || "—"}</td>
                   <td style={{ position: "relative" }}>
                     <button onClick={() => setEditingId(editingId === o.id ? null : o.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
                       <Badge text={pStatus} tone={paymentTone[pStatus]} />
@@ -1074,6 +1106,78 @@ function ChangePasswordForm({ onClose, notify }) {
   );
 }
 
+function Customers({ orders }) {
+  const [q, setQ] = useState("");
+  const [expanded, setExpanded] = useState(null);
+
+  const groups = useMemo(() => {
+    const map = {};
+    orders.forEach((o) => {
+      const key = (o.phone || o.customer || "unknown").trim().toLowerCase();
+      if (!map[key]) map[key] = { name: o.customer, phone: o.phone, orders: [] };
+      map[key].orders.push(o);
+    });
+    return Object.values(map)
+      .map((g) => ({
+        ...g,
+        count: g.orders.length,
+        total: g.orders.filter((o) => o.status !== "Returned").reduce((s, o) => s + Number(o.sell || 0), 0),
+        lastDate: g.orders.reduce((max, o) => (o.date > max ? o.date : max), ""),
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [orders]);
+
+  const filtered = groups.filter((g) => (g.name + " " + (g.phone || "")).toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <Panel title="Customers" count={`${groups.length} customers`} extra={<SearchBox value={q} onChange={setQ} />}>
+      {filtered.length === 0 ? <EmptyRow text="Koi customer nahi mila." /> : (
+        <table className="mn-table">
+          <thead><tr><th>Customer</th><th>Phone</th><th>Orders</th><th>Total spend</th><th>Last order</th><th></th></tr></thead>
+          <tbody>
+            {filtered.map((g) => (
+              <Fragment key={g.phone || g.name}>
+                <tr>
+                  <td>{g.name}</td>
+                  <td style={{ color: COLORS.textDim }}>{g.phone || "—"}</td>
+                  <td className="mn-num">{g.count}</td>
+                  <td className="mn-num">{fmt(g.total)}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{g.lastDate}</td>
+                  <td>
+                    <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setExpanded(expanded === (g.phone || g.name) ? null : (g.phone || g.name))}>
+                      {expanded === (g.phone || g.name) ? "Hide" : "View history"}
+                    </button>
+                  </td>
+                </tr>
+                {expanded === (g.phone || g.name) && (
+                  <tr>
+                    <td colSpan={6} style={{ background: COLORS.surface2, padding: 12 }}>
+                      <table className="mn-table">
+                        <thead><tr><th>Order</th><th>Date</th><th>Product</th><th>Amount</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {g.orders.map((o) => (
+                            <tr key={o.id}>
+                              <td>{o.orderNo}</td>
+                              <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.date}</td>
+                              <td style={{ color: COLORS.textDim }}>{o.product}</td>
+                              <td className="mn-num">{fmt(o.sell)}</td>
+                              <td><Badge text={o.status} tone={orderStatusTone[o.status]} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
+  );
+}
+
 function RowLine({ label, value, bold, negative }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: bold ? 13.5 : 12.5, fontWeight: bold ? 700 : 400, color: negative ? COLORS.negative : COLORS.text, padding: "3px 0" }}>
@@ -1109,6 +1213,7 @@ function ReceiptView({ receipt, onNew }) {
         <RowLine label="Amount paid" value={receipt.amountPaid} />
         {due > 0 && <RowLine label="Balance due" value={due} negative />}
         {receipt.method && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 8 }}>Paid via {receipt.method}</div>}
+        {receipt.billedBy && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 2 }}>Billed by {receipt.billedBy}</div>}
         <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 12, textAlign: "center" }}>Shukriya! Dobara tashreef laayen.</div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center" }}>
@@ -1119,7 +1224,7 @@ function ReceiptView({ receipt, onNew }) {
   );
 }
 
-function POS({ data, update, notify }) {
+function POS({ data, update, notify, user }) {
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
   const [scanCode, setScanCode] = useState("");
@@ -1175,6 +1280,7 @@ function POS({ data, update, notify }) {
       id: genId(), orderNo, customer: customer || "Walk-in customer", phone, product: productsSummary,
       qty: totalQty, sell: total, cost: costTotal, courier: "In-store", tracking: "", status,
       amountPaid, dueDate: amountPaid < total ? dueDate : "", method, date: todayISO(),
+      billedBy: user?.name || "Unknown",
     };
     update("orders", (list) => [...list, newOrder]);
     update("inventory", (list) => list.map((inv) => {
@@ -1592,6 +1698,27 @@ function Reports({ data }) {
   const hasOrders = data.orders.length > 0;
   const hasInventory = data.inventory.length > 0;
 
+  // Parses "Item Name x2, Other Item x1" style summaries (used for both POS
+  // and WooCommerce-synced orders) to rank products by units sold.
+  const bestSellers = useMemo(() => {
+    const map = {};
+    data.orders.forEach((o) => {
+      if (o.status === "Returned" || !o.product) return;
+      o.product.split(",").forEach((seg) => {
+        const m = seg.trim().match(/^(.*)\s+x(\d+(?:\.\d+)?)$/i);
+        if (m) {
+          const name = m[1].trim();
+          const qty = Number(m[2]);
+          map[name] = (map[name] || 0) + qty;
+        }
+      });
+    });
+    return Object.entries(map)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 8);
+  }, [data.orders]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <ChartCard title="Revenue & profit trend">
@@ -1639,6 +1766,21 @@ function Reports({ data }) {
             </ResponsiveContainer>
           )}
         </ChartCard>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <SectionHeading title="Best-selling products" />
+        {bestSellers.length === 0 ? <EmptyRow text="Abhi tak koi bikri nahi." /> : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {bestSellers.map((p, idx) => (
+              <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <span style={{ width: 18, color: COLORS.textFaint, fontFamily: "'Space Grotesk', sans-serif" }}>{idx + 1}</span>
+                <span style={{ flex: 1 }}>{p.name}</span>
+                <span className="mn-num" style={{ color: COLORS.accent }}>{p.qty} sold</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

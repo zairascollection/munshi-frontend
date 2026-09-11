@@ -69,7 +69,7 @@ export async function removeUser(id) {
 // --- Field name mapping between the UI's camelCase and the DB's snake_case ---
 // Only fields that actually differ need an entry; everything else passes through.
 const FIELD_MAPS = {
-  orders: { orderNo: "order_no", amountPaid: "amount_paid", dueDate: "due_date" },
+  orders: { orderNo: "order_no", amountPaid: "amount_paid", dueDate: "due_date", billedBy: "billed_by", returnReason: "return_reason" },
   employees: { paidFrom: "account_id" },
   affiliates: { paidFrom: "account_id" },
   expenses: { accountId: "account_id" },
@@ -137,4 +137,7 @@ export async function financeLedger() {
 // --- WooCommerce manual sync trigger (owner only) ---
 export async function syncWooCommerce(days) {
   return request("/sync/woocommerce", { method: "POST", body: { days } });
+}
+export async function sendLowStockAlert() {
+  return request("/alerts/low-stock", { method: "POST" });
 }
