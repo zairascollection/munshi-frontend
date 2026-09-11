@@ -13,6 +13,19 @@ const COLORS = {
   negative: "#E2574C",
 };
 
+function LogoMark({ size = 44 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" style={{ flexShrink: 0 }}>
+      <circle cx="20" cy="20" r="19" fill={COLORS.surface2} stroke={COLORS.accent} strokeWidth="1.4" />
+      <circle cx="20" cy="20" r="15.5" fill="none" stroke={COLORS.accent} strokeWidth="0.6" opacity="0.5" />
+      <text x="20" y="27" textAnchor="middle" fontFamily="'Space Grotesk', serif" fontSize="18" fontWeight="700" fill={COLORS.accent}>
+        Z
+      </text>
+      <circle cx="20" cy="9.5" r="1.1" fill={COLORS.accent} />
+    </svg>
+  );
+}
+
 export default function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,8 +50,11 @@ export default function Login({ onLoggedIn }) {
   return (
     <div style={{ background: COLORS.bg, minHeight: 640, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', sans-serif", color: COLORS.text, borderRadius: 10, border: `1px solid ${COLORS.border}` }}>
       <form onSubmit={submit} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 32, width: 320 }}>
-        <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 19, marginBottom: 4 }}>Zaira's Collection</div>
-        <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginBottom: 22 }}>Sign in to Munshi</div>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+          <LogoMark size={48} />
+        </div>
+        <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 19, marginBottom: 4, textAlign: "center" }}>Zaira's Collection</div>
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginBottom: 22, textAlign: "center" }}>Sign in to Munshi</div>
 
         <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Email</label>
         <input

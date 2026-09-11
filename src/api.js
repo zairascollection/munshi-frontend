@@ -53,6 +53,9 @@ export async function login(email, password) {
 export async function me() {
   return request("/auth/me");
 }
+export async function changePassword(oldPassword, newPassword) {
+  return request("/auth/change-password", { method: "POST", body: { oldPassword, newPassword } });
+}
 export async function createUser({ name, email, password, role }) {
   return request("/auth/users", { method: "POST", body: { name, email, password, role } });
 }
@@ -134,37 +137,4 @@ export async function financeLedger() {
 // --- WooCommerce manual sync trigger (owner only) ---
 export async function syncWooCommerce(days) {
   return request("/sync/woocommerce", { method: "POST", body: { days } });
-}
-
-// --- Auth: Password Change ---
-export async function changePassword(oldPassword, newPassword) {
-  return request("/auth/change-password", { 
-    method: "POST", 
-    body: { oldPassword, newPassword } 
-  });
-}
-
-// --- Auth: Get User Profile ---
-export async function getUserProfile() {
-  return request("/auth/profile");
-}
-
-// --- Reports: Monthly Report ---
-export async function getMonthlyReport(month) {
-  return request(`/reports/monthly?month=${month}`);
-}
-
-// --- Reports: List Available Months ---
-export async function getAvailableMonths() {
-  return request("/reports/monthly-list");
-}
-
-// --- Utility: File to Base64 ---
-export function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
