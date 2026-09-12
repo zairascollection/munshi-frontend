@@ -51,3 +51,60 @@ Aur:
 2. **Ad spend** mein is mahine ka Facebook/Instagram kharcha daalein →
    Profit tracker mein asli ROAS aa jayega.
 3. **Team** mein manager login banayein: role dropdown se `manager` chunein.
+
+
+---
+
+# v3 — naye modules
+
+## Frontend
+`src/App.jsx` aur `src/api.js` replace karein (wahi tareeqa — GitHub par
+`src` folder ke andar upload).
+
+## Backend
+`src/` folder poora replace karein. Nayi files:
+
+```
+src/routes/purchases.js     (NEW)
+src/routes/customers.js     (NEW)
+src/routes/whatsapp.js      (NEW)
+src/services/whatsapp.js    (NEW)
+src/routes/resources.js     (updated - suppliers + variants + stock push)
+src/services/woocommerce.js (updated - stock push to website)
+src/utils/crudRouter.js     (updated)
+src/utils/permissions.js    (updated)
+src/db/schema.sql           (updated)
+src/server.js               (updated)
+```
+
+Deploy Logs mein `Schema migration applied.` phir se aana chahiye.
+
+## Naye env vars (Railway -> Variables)
+
+```
+WHATSAPP_TOKEN=
+WHATSAPP_PHONE_ID=
+WHATSAPP_VERIFY_TOKEN=          (koi bhi apni marzi ka string)
+OWNER_WHATSAPP=923001234567
+```
+
+In ke bagair baqi sab kaam karta rahega — sirf WhatsApp wale buttons
+"not configured" kahenge.
+
+## Cron jobs (Railway -> New -> Cron Job)
+
+```
+GET /reports/month-end/cron?secret=<ALERTS_CRON_SECRET>   ->  5 0 1 * *
+GET /alerts/digest/cron?secret=<ALERTS_CRON_SECRET>       ->  0 4 * * *
+```
+
+## Pehla setup
+
+1. **Suppliers** mein apne 2-3 supplier add karein.
+2. **Purchases** -> New PO -> items daalein -> maal aane par **Receive**.
+   Yahi se stock aur real cost dono set hongi.
+3. **Inventory** mein purane items ko "Design / group name" + Size + Colour
+   de dein taake variants group ho jayein.
+4. **Cost settings -> Integrations** mein teeno dot green hone chahiyen.
+5. **Customers** tab kholein — jo log 2+ parcel return kar chuke hain wo
+   khud "Risky" mark honge. Jinko COD nahi bhejna, unhein Block COD karein.

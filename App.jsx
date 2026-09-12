@@ -5,6 +5,7 @@ import {
   BarChart3, ImageIcon, ShieldCheck, User, Receipt, Minus, Printer, BookUser,
   Landmark, ScanLine, LogOut, RefreshCw, Pencil, Undo2, Megaphone,
   Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
+  MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
@@ -15,6 +16,10 @@ import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
   changePassword, sendLowStockAlert, getAuditLog,
   returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
+  listCustomers, customerRisk, saveCustomer,
+  listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
+  whatsappHealth, sendConfirmation, sendConfirmationBulk, setConfirmationStatus, sendDigestNow,
+  pushStockToWebsite,
 } from "./api";
 
 const COLORS = {
@@ -65,6 +70,8 @@ const NAV = [
   { id: "profit", label: "Profit tracker", icon: TrendingUp, ownerOnly: true, managerOk: true },
   { id: "monthly", label: "Monthly sheet", icon: CalendarDays, ownerOnly: true, managerOk: true },
   { id: "adspend", label: "Ad spend", icon: Megaphone, ownerOnly: true, managerOk: true },
+  { id: "purchases", label: "Purchases", icon: PackagePlus, ownerOnly: true, managerOk: true },
+  { id: "suppliers", label: "Suppliers", icon: Factory, ownerOnly: true, managerOk: true },
   { id: "finance", label: "Finance", icon: Wallet, ownerOnly: true, managerOk: true },
   { id: "accounts", label: "Accounts", icon: Landmark, ownerOnly: true },
   { id: "expenses", label: "Expenses", icon: TrendingDown, ownerOnly: true, managerOk: true },
@@ -78,6 +85,7 @@ const NAV = [
 // nav is grouped by what you're actually trying to do.
 const NAV_SECTIONS = [
   { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers"] },
+  { title: "Stock aana", ids: ["purchases", "suppliers"] },
   { title: "Paisa", ids: ["profit", "monthly", "reports", "finance", "accounts", "expenses", "adspend"] },
   { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
 ];
@@ -86,22 +94,39 @@ const CHART_COLORS = ["#E8A33D", "#5B9BD5", "#3FB68A", "#E2574C", "#9B7EDE", "#4
 
 const accountName = (accounts, id) => ((accounts || []).find((a) => a.id === id) || {}).name || "—";
 
+// Phone/tablet detection. The whole app was built desktop-first, so
+// instead of rewriting every screen the layout switches to a slide-over
+// sidebar and tables get horizontal scroll wrappers below this width.
+function useIsMobile(breakpoint = 820) {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 // Resources fetched on login. Owner-only ones are skipped for staff
 // (the backend would 403 them anyway — no point making the calls).
 const OWNER_ONLY_KEYS = new Set(["accounts"]);
-const MANAGER_OK_KEYS = new Set(["expenses", "affiliates", "ad-spend"]);
-const ALL_KEYS = ["inventory", "orders", "employees", "affiliates", "accounts", "expenses", "ad-spend"];
+const MANAGER_OK_KEYS = new Set(["expenses", "affiliates", "ad-spend", "suppliers"]);
+const ALL_KEYS = ["inventory", "orders", "employees", "affiliates", "accounts", "expenses", "ad-spend", "suppliers"];
 
 export default function App() {
   const [user, setUser] = useState(null); // { id, name, email, role } once logged in
   const [authChecked, setAuthChecked] = useState(false);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState("dashboard");
-  const [data, setData] = useState({ inventory: [], orders: [], employees: [], affiliates: [], accounts: [], expenses: [], "ad-spend": [] });
+  const [data, setData] = useState({ inventory: [], orders: [], employees: [], affiliates: [], accounts: [], expenses: [], "ad-spend": [], suppliers: [] });
   const [settings, setSettings] = useState({ default_delivery_charge: 0, default_return_charge: 0, cash_handling_pct: 0, tax_pct: 0, packaging_cost: 0 });
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [changingPw, setChangingPw] = useState(false);
+  const isMobile = useIsMobile();
+  const [navOpen, setNavOpen] = useState(false);
 
   const notify = (msg) => {
     setToast(msg);
@@ -209,6 +234,8 @@ export default function App() {
     }
   };
 
+  useEffect(() => { setNavOpen(false); }, [tab]);
+
   useEffect(() => {
     const item = NAV.find((n) => n.id === tab);
     if (item && item.ownerOnly && !(role === "owner" || (item.managerOk && role === "manager"))) setTab("dashboard");
@@ -259,7 +286,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: COLORS.bg, minHeight: 640, display: "flex", fontFamily: "'Inter', sans-serif", color: COLORS.text, borderRadius: 10, overflow: "hidden", border: `1px solid ${COLORS.border}` }}>
+    <div style={{ background: COLORS.bg, minHeight: isMobile ? "100vh" : 640, display: "flex", fontFamily: "'Inter', sans-serif", color: COLORS.text, borderRadius: isMobile ? 0 : 10, overflow: "hidden", border: isMobile ? "none" : `1px solid ${COLORS.border}` }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
@@ -290,24 +317,53 @@ export default function App() {
         select.mn-input { appearance: none; }
         .mn-spin { animation: mn-spin 1s linear infinite; }
         @keyframes mn-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        /* --- Mobile --- the app was built desktop-first, so on small
+           screens tables scroll sideways instead of squashing, grids
+           collapse to one column, and the sidebar becomes a drawer. */
+        .mn-tablewrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        @media (max-width: 820px) {
+          .mn-table { font-size: 12.5px; min-width: 560px; }
+          .mn-table th, .mn-table td { padding: 9px 8px; white-space: nowrap; }
+          .mn-grid-2 { grid-template-columns: 1fr !important; }
+          .mn-pad { padding: 14px 14px !important; }
+          .mn-btn, .mn-btn-ghost { padding: 9px 12px; }
+          .mn-input { font-size: 16px; } /* stops iOS zooming in on focus */
+        }
       `}</style>
 
-      <Sidebar tab={tab} setTab={setTab} metrics={metrics} role={role} user={user} onLogout={logout} onSync={runSync} syncing={syncing} onChangePassword={() => setChangingPw(true)} />
+      {isMobile ? (
+        navOpen && (
+          <>
+            <div
+              onClick={() => setNavOpen(false)}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 40 }}
+            />
+            <div style={{ position: "fixed", top: 0, bottom: 0, left: 0, zIndex: 41, display: "flex" }}>
+              <Sidebar tab={tab} setTab={setTab} metrics={metrics} role={role} user={user} onLogout={logout} onSync={runSync} syncing={syncing} onChangePassword={() => setChangingPw(true)} />
+            </div>
+          </>
+        )
+      ) : (
+        <Sidebar tab={tab} setTab={setTab} metrics={metrics} role={role} user={user} onLogout={logout} onSync={runSync} syncing={syncing} onChangePassword={() => setChangingPw(true)} />
+      )}
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <TopBar tab={tab} role={role} />
-        <div className="mn-scroll" style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
+        <TopBar tab={tab} role={role} isMobile={isMobile} onMenu={() => setNavOpen(true)} />
+        <div className="mn-scroll mn-pad" style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 14px" : "24px 28px" }}>
           {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} notify={notify} />}
           {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} />}
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
           {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
           {tab === "returns" && <Returns orders={data.orders} notify={notify} role={role} settings={settings} reload={() => loadAll(role)} />}
-          {tab === "customers" && <Customers orders={data.orders} />}
+          {tab === "customers" && <Customers orders={data.orders} notify={notify} role={role} />}
           {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
           {tab === "reports" && <Reports data={data} role={role} />}
           {tab === "profit" && (role === "owner" || role === "manager") && <ProfitTracker notify={notify} />}
           {tab === "monthly" && (role === "owner" || role === "manager") && <MonthlySheet notify={notify} />}
           {tab === "adspend" && (role === "owner" || role === "manager") && <AdSpend rows={data["ad-spend"] || []} update={(fn) => update("ad-spend", fn)} notify={notify} role={role} />}
+          {tab === "suppliers" && (role === "owner" || role === "manager") && <Suppliers suppliers={data.suppliers || []} update={(fn) => update("suppliers", fn)} notify={notify} role={role} />}
+          {tab === "purchases" && (role === "owner" || role === "manager") && <Purchases suppliers={data.suppliers || []} inventory={data.inventory} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "finance" && (role === "owner" || role === "manager") && <Finance data={data} metrics={metrics} />}
           {tab === "accounts" && role === "owner" && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "expenses" && (role === "owner" || role === "manager") && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
@@ -408,16 +464,23 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
   );
 }
 
-function TopBar({ tab, role }) {
+function TopBar({ tab, role, isMobile, onMenu }) {
   const label = NAV.find((n) => n.id === tab)?.label || "";
-  const date = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const date = new Date().toLocaleDateString("en-GB", isMobile
+    ? { day: "numeric", month: "short" }
+    : { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   return (
-    <div style={{ padding: "18px 28px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 600, margin: 0 }}>{label}</h2>
+    <div style={{ padding: isMobile ? "13px 14px" : "18px 28px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        {isMobile && (
+          <button onClick={onMenu} aria-label="Menu" style={{ background: "none", border: "none", color: COLORS.text, cursor: "pointer", padding: 2, display: "flex" }}>
+            <Menu size={20} />
+          </button>
+        )}
+        <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: isMobile ? 16 : 19, fontWeight: 600, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</h2>
         <Badge text={role === "owner" ? "Owner view" : role === "manager" ? "Manager view" : "Staff view"} tone={role === "owner" ? "accent" : "info"} />
       </div>
-      <span style={{ fontSize: 12.5, color: COLORS.textFaint }}>{date}</span>
+      <span style={{ fontSize: 12.5, color: COLORS.textFaint, whiteSpace: "nowrap" }}>{date}</span>
     </div>
   );
 }
@@ -502,13 +565,13 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
         {isManagerOrAbove && <StatCard label="Stock value at sale price" value={fmt(metrics.stockSaleValue)} sub="If everything sells" />}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+      <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title="Recent orders" action={() => setTab("orders")} />
           {recentOrders.length === 0 ? (
             <EmptyRow text="No orders yet." />
           ) : (
-            <table className="mn-table">
+            <div className="mn-tablewrap"><table className="mn-table">
               <thead><tr><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th>Payment</th></tr></thead>
               <tbody>
                 {recentOrders.map((o) => (
@@ -521,7 +584,7 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
 
@@ -600,7 +663,7 @@ function LogoMark({ size = 36 }) {
   );
 }
 
-function AddForm({ fields, onCancel, onSave, title, initialValues }) {
+function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
   const [vals, setVals] = useState(() =>
     Object.fromEntries(fields.map((f) => [f.key, initialValues?.[f.key] ?? f.default ?? ""]))
   );
@@ -670,6 +733,7 @@ function AddForm({ fields, onCancel, onSave, title, initialValues }) {
           </div>
         ))}
       </div>
+      {footer && footer(vals)}
       <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
         <button className="mn-btn" onClick={submit}>Save</button>
         <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
@@ -696,12 +760,41 @@ function Inventory({ items, update, notify, role }) {
   const [editingId, setEditingId] = useState(null);
   const [q, setQ] = useState("");
   const isOwner = role === "owner";
-  const filtered = items.filter((i) => (i.name + i.sku + i.category).toLowerCase().includes(q.toLowerCase()));
+  const filtered = items.filter((i) =>
+    `${i.name || ""}${i.sku || ""}${i.category || ""}${i.parentName || ""}${i.size || ""}${i.color || ""}`
+      .toLowerCase().includes(q.toLowerCase())
+  );
   const editingItem = items.find((i) => i.id === editingId);
+
+  // Rows sharing a "Design / group name" are shown under one heading so a
+  // shirt in five sizes reads as one product, not five unrelated lines.
+  const grouped = useMemo(() => {
+    const groups = [];
+    const byParent = {};
+    filtered.forEach((i) => {
+      const parent = (i.parentName || "").trim();
+      if (!parent) { groups.push({ parent: `__single_${i.id}`, isGroup: false, items: [i] }); return; }
+      if (!byParent[parent]) {
+        byParent[parent] = { parent, isGroup: true, items: [] };
+        groups.push(byParent[parent]);
+      }
+      byParent[parent].items.push(i);
+    });
+    return groups.map((g) => ({
+      ...g,
+      totalQty: g.items.reduce((t, x) => t + Number(x.quantity || 0), 0),
+      lowCount: g.items.filter((x) => Number(x.quantity) <= Number(x.reorder)).length,
+    }));
+  }, [filtered]);
 
   const baseFields = [
     { key: "name", label: "Item name", required: true },
     { key: "sku", label: "SKU", required: true },
+    // Variants: each size/colour is its own row with its own stock and
+    // cost, but rows sharing a Design name are grouped together below.
+    { key: "parentName", label: "Design / group name" },
+    { key: "size", label: "Size", type: "select", options: ["", "XS", "S", "M", "L", "XL", "XXL", "Free size", "Unstitched"] },
+    { key: "color", label: "Colour" },
     { key: "category", label: "Category", type: "select", options: ["Unstitched", "Stitched", "Best Sellers", "New Arrivals", "Summer", "Winter", "Sale"] },
     { key: "image", label: "Photo (optional)", type: "file" },
     { key: "quantity", label: "Quantity", type: "number", default: 0 },
@@ -746,18 +839,35 @@ function Inventory({ items, update, notify, role }) {
         />
       )}
       {filtered.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th></th><th>Item</th><th>SKU</th><th>Category</th><th>Qty</th><th>Real cost</th><th>Price</th><th>Margin</th><th>Stock value</th><th></th></tr></thead>
           <tbody>
-            {filtered.map((i) => {
+            {grouped.map((g) => (
+              <Fragment key={g.parent}>
+                {g.isGroup && (
+                  <tr>
+                    <td colSpan={10} style={{ background: COLORS.surface2, padding: "8px 12px", fontSize: 12.5, fontWeight: 600 }}>
+                      {g.parent}
+                      <span style={{ color: COLORS.textFaint, fontWeight: 400, marginLeft: 8 }}>
+                        {g.items.length} variants · total {g.totalQty} pcs
+                        {g.lowCount > 0 && <span style={{ color: COLORS.negative }}> · {g.lowCount} low</span>}
+                      </span>
+                    </td>
+                  </tr>
+                )}
+                {g.items.map((i) => {
               const low = Number(i.quantity) <= Number(i.reorder);
               const margin = Number(i.price) > 0
                 ? Math.round(((Number(i.price) - Number(i.cost || 0)) / Number(i.price)) * 100)
                 : 0;
+              const variantLabel = [i.size, i.color].filter(Boolean).join(" · ");
               return (
                 <tr key={i.id}>
-                  <td><Thumb url={i.image} size={52} /></td>
-                  <td>{i.name}</td>
+                  <td>{g.isGroup ? null : <Thumb url={i.image} size={52} />}</td>
+                  <td style={g.isGroup ? { paddingLeft: 26 } : undefined}>
+                    {g.isGroup ? (variantLabel || i.name) : i.name}
+                    {!g.isGroup && variantLabel && <span style={{ color: COLORS.textFaint, fontSize: 11.5, marginLeft: 6 }}>{variantLabel}</span>}
+                  </td>
                   <td style={{ color: COLORS.textFaint }}>{i.sku}</td>
                   <td style={{ color: COLORS.textDim }}>{i.category}</td>
                   <td className="mn-num" style={{ color: low ? COLORS.negative : COLORS.text }}>{i.quantity}{low && " ⚠"}</td>
@@ -773,9 +883,11 @@ function Inventory({ items, update, notify, role }) {
                   </td>
                 </tr>
               );
-            })}
+                })}
+              </Fragment>
+            ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -826,11 +938,31 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [returning, setReturning] = useState(null);
+  const [sendingBulk, setSendingBulk] = useState(false);
   const isOwner = role === "owner";
   const isManagerOrAbove = role === "owner" || role === "manager";
+
+  // Pending parcels that haven't been confirmed yet — these are the ones
+  // that turn into returns if they go out unchecked.
+  const unconfirmed = orders.filter(
+    (o) => o.status === "Pending" && o.phone && !["Confirmed", "Sent", "Cancelled"].includes(o.confirmationStatus)
+  );
+
+  const sendAllConfirmations = async () => {
+    setSendingBulk(true);
+    try {
+      const res = await sendConfirmationBulk(unconfirmed.map((o) => o.id));
+      notify(`${res.sent} message bheje${res.failed.length ? `, ${res.failed.length} fail` : ""}`);
+      reload && reload();
+    } catch (err) {
+      notify(`WhatsApp failed: ${err.message}`);
+    } finally { setSendingBulk(false); }
+  };
+
   const fields = [
     { key: "orderNo", label: "Order No", default: "ORD-" + Math.floor(1000 + Math.random() * 9000), required: true },
     { key: "customer", label: "Customer name", required: true },
+    { key: "phone", label: "Phone (WhatsApp)" },
     { key: "city", label: "City" },
     { key: "product", label: "Product" },
     { key: "qty", label: "Qty", type: "number", default: 1 },
@@ -869,10 +1001,19 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   };
 
   return (
-    <Panel title="Orders & parcels" addLabel="Add order" onAdd={() => setAdding(true)} count={`${orders.length} orders`}>
+    <Panel
+      title="Orders & parcels" addLabel="Add order" onAdd={() => setAdding(true)}
+      count={`${orders.length} orders${unconfirmed.length ? ` · ${unconfirmed.length} confirm pending` : ""}`}
+      extra={unconfirmed.length > 0 ? (
+        <button className="mn-btn-ghost" style={{ fontSize: 12 }} disabled={sendingBulk} onClick={sendAllConfirmations}>
+          <MessageCircle size={13} /> {sendingBulk ? "Bhej raha hai..." : `WhatsApp ${unconfirmed.length} ko`}
+        </button>
+      ) : null}
+    >
       {adding && (
         <AddForm
           title="New order" fields={fields} onCancel={() => setAdding(false)}
+          footer={(vals) => <CustomerRiskBanner phone={vals.phone} />}
           onSave={(v) => {
             update((list) => [...list, { id: genId(), ...v, qty: Number(v.qty), sell: Number(v.sell), cost: Number(v.cost || 0), amountPaid: Number(v.amountPaid || 0), dueDate: "", date: todayISO() }]);
             setAdding(false);
@@ -889,8 +1030,8 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
         />
       )}
       {orders.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
-        <table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
+        <div className="mn-tablewrap"><table className="mn-table">
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
           <tbody>
             {orders.map((o) => {
               const pStatus = paymentStatusOf(o);
@@ -905,6 +1046,9 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                   <td>
                     <button onClick={() => cycleStatus(o)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text={o.status} tone={orderStatusTone[o.status]} /></button>
                     {o.status === "Returned" && o.returnReason && <div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 3 }}>{o.returnReason}</div>}
+                  </td>
+                  <td>
+                    <ConfirmationCell order={o} notify={notify} onChanged={reload} />
                   </td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.billedBy || "—"}</td>
                   <td style={{ position: "relative" }}>
@@ -928,7 +1072,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
               );
             })}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -1057,7 +1201,7 @@ function Returns({ orders, notify, role, settings, reload }) {
 
       <Panel title="Returned orders" count={`${returned.length} returns`}>
         {returned.length === 0 ? <EmptyRow text="Abhi tak koi return nahi — achi baat hai." /> : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Order</th><th>Customer</th><th>City</th><th>Product</th><th>Reason</th><th>Refund</th><th>Return charge</th><th>Restocked</th><th>Date</th></tr></thead>
             <tbody>
               {returned.map((o) => (
@@ -1074,13 +1218,13 @@ function Returns({ orders, notify, role, settings, reload }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </Panel>
 
       <Panel title="Naya return record karein" count={`${pending.length} active orders`}>
         {pending.length === 0 ? <EmptyRow text="Koi active order nahi." /> : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {pending.slice(0, 25).map((o) => (
@@ -1097,7 +1241,7 @@ function Returns({ orders, notify, role, settings, reload }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </Panel>
 
@@ -1150,7 +1294,7 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
         />
       )}
       {employees.length === 0 ? <EmptyRow text="Koi employee add nahi hua." /> : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th></th><th>Name</th><th>Role</th>{isOwner && <th>Salary</th>}<th>Phone</th><th>Joined</th>{isOwner && <th>This month</th>}{isOwner && <th></th>}</tr></thead>
           <tbody>
             {employees.map((e) => (
@@ -1177,7 +1321,7 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -1216,7 +1360,7 @@ function Affiliates({ affiliates, accounts, update, updateAccounts, notify }) {
       )}
       {affiliates.length === 0 ? <EmptyRow text="Koi affiliate add nahi hua." /> : (
         <>
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Partner</th><th>Platform</th><th>Rate</th><th>Sales</th><th>Commission</th><th>Net profit</th><th>Status</th><th>Payment</th><th></th></tr></thead>
             <tbody>
               {affiliates.map((a) => {
@@ -1245,7 +1389,7 @@ function Affiliates({ affiliates, accounts, update, updateAccounts, notify }) {
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
           {(() => {
             const totalSales = affiliates.reduce((s, a) => s + Number(a.sales || 0), 0);
             const totalCommission = affiliates.reduce((s, a) => s + Number(a.commission || 0), 0);
@@ -1315,7 +1459,7 @@ function Team({ notify, currentUserId }) {
       ) : users.length === 0 ? (
         <EmptyRow text="No teammates added yet." />
       ) : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th>Name</th><th>Email</th><th>Access</th><th>Added</th><th></th></tr></thead>
           <tbody>
             {users.map((u) => (
@@ -1328,7 +1472,7 @@ function Team({ notify, currentUserId }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
       <div style={{ padding: "12px 18px", fontSize: 11.5, color: COLORS.textFaint, borderTop: `1px solid ${COLORS.borderSoft}` }}>
         Staff logins see Inventory, Orders, POS, Employees, Customers, and Reports — salary, finance, accounts, expenses, affiliates, delete buttons, and Team stay hidden. Managers see everything staff sees plus cost, salary, profit, finance, expenses, and affiliates — but can't delete records or manage Accounts/Team. Owner logins see and can do everything.
@@ -1388,75 +1532,158 @@ function ChangePasswordForm({ onClose, notify }) {
   );
 }
 
-function Customers({ orders }) {
+function Customers({ orders, notify, role }) {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState(null);
+  const [ledger, setLedger] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const isManagerOrAbove = role === "owner" || role === "manager";
 
-  const groups = useMemo(() => {
-    const map = {};
-    orders.forEach((o) => {
-      const key = (o.phone || o.customer || "unknown").trim().toLowerCase();
-      if (!map[key]) map[key] = { name: o.customer, phone: o.phone, orders: [] };
-      map[key].orders.push(o);
-    });
-    return Object.values(map)
-      .map((g) => ({
-        ...g,
-        count: g.orders.length,
-        total: g.orders.filter((o) => o.status !== "Returned").reduce((s, o) => s + Number(o.sell || 0), 0),
-        lastDate: g.orders.reduce((max, o) => (o.date > max ? o.date : max), ""),
-      }))
-      .sort((a, b) => b.total - a.total);
-  }, [orders]);
+  const load = () => listCustomers().then(setLedger).catch((err) => notify(`Customers load failed: ${err.message}`));
+  useEffect(() => { load(); }, []);
 
-  const filtered = groups.filter((g) => (g.name + " " + (g.phone || "")).toLowerCase().includes(q.toLowerCase()));
+  const rows = ledger?.customers || [];
+  const filtered = rows.filter((c) => `${c.name || ""} ${c.phone || ""} ${c.city || ""}`.toLowerCase().includes(q.toLowerCase()));
+  const riskyCount = rows.filter((c) => c.risky).length;
+  const blockedCount = rows.filter((c) => c.cod_blocked).length;
+  const historyFor = (phoneKey) =>
+    orders.filter((o) => String(o.phone || "").replace(/[^0-9]/g, "").slice(-10) === phoneKey);
+
+  const toggleBlock = async (c) => {
+    try {
+      await saveCustomer(c.phone, { name: c.name, city: c.city, notes: c.notes, cod_blocked: !c.cod_blocked });
+      notify(!c.cod_blocked ? "COD block laga diya" : "COD block hata diya");
+      load();
+    } catch (err) { notify(`Failed: ${err.message}`); }
+  };
+
+  if (!ledger) return <EmptyRow text="Customers load ho rahe hain..." />;
 
   return (
-    <Panel title="Customers" count={`${groups.length} customers`} extra={<SearchBox value={q} onChange={setQ} />}>
-      {filtered.length === 0 ? <EmptyRow text="Koi customer nahi mila." /> : (
-        <table className="mn-table">
-          <thead><tr><th>Customer</th><th>Phone</th><th>Orders</th><th>Total spend</th><th>Last order</th><th></th></tr></thead>
-          <tbody>
-            {filtered.map((g) => (
-              <Fragment key={g.phone || g.name}>
-                <tr>
-                  <td>{g.name}</td>
-                  <td style={{ color: COLORS.textDim }}>{g.phone || "—"}</td>
-                  <td className="mn-num">{g.count}</td>
-                  <td className="mn-num">{fmt(g.total)}</td>
-                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{g.lastDate}</td>
-                  <td>
-                    <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setExpanded(expanded === (g.phone || g.name) ? null : (g.phone || g.name))}>
-                      {expanded === (g.phone || g.name) ? "Hide" : "View history"}
-                    </button>
-                  </td>
-                </tr>
-                {expanded === (g.phone || g.name) && (
-                  <tr>
-                    <td colSpan={6} style={{ background: COLORS.surface2, padding: 12 }}>
-                      <table className="mn-table">
-                        <thead><tr><th>Order</th><th>Date</th><th>Product</th><th>Amount</th><th>Status</th></tr></thead>
-                        <tbody>
-                          {g.orders.map((o) => (
-                            <tr key={o.id}>
-                              <td>{o.orderNo}</td>
-                              <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.date}</td>
-                              <td style={{ color: COLORS.textDim }}>{o.product}</td>
-                              <td className="mn-num">{fmt(o.sell)}</td>
-                              <td><Badge text={o.status} tone={orderStatusTone[o.status]} /></td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Customers" value={rows.length} sub="Phone number ke hisaab se" />
+        <StatCard label="Risky customers" value={riskyCount} sub={`${ledger.threshold}+ returns wale`} tone={riskyCount ? "negative" : undefined} />
+        <StatCard label="COD blocked" value={blockedCount} sub="Sirf advance par bhejein" tone={blockedCount ? "negative" : undefined} />
+      </div>
+
+      {editing && (
+        <CustomerEditor
+          customer={editing}
+          onCancel={() => setEditing(null)}
+          onSaved={() => { setEditing(null); notify("Customer updated"); load(); }}
+          notify={notify}
+        />
+      )}
+
+      <Panel title="Customers" count={`${rows.length} customers`} extra={<SearchBox value={q} onChange={setQ} />}>
+        {filtered.length === 0 ? <EmptyRow text="Koi customer nahi mila." /> : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr>
+              <th>Customer</th><th>Phone</th><th>City</th><th>Orders</th><th>Returns</th>
+              <th>Lifetime value</th><th>Baqaya</th>{isManagerOrAbove && <th>Return cost</th>}<th>Last order</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.map((c) => (
+                <Fragment key={c.phone_key}>
+                  <tr style={c.cod_blocked ? { background: COLORS.negativeDim } : undefined}>
+                    <td>
+                      {c.name || "—"}
+                      {c.cod_blocked && <span style={{ marginLeft: 6 }}><Badge text="COD blocked" tone="negative" /></span>}
+                      {!c.cod_blocked && c.risky && <span style={{ marginLeft: 6 }}><Badge text="Risky" tone="negative" /></span>}
+                      {c.notes && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 3 }}>{c.notes}</div>}
+                    </td>
+                    <td style={{ color: COLORS.textDim }}>{c.phone || "—"}</td>
+                    <td style={{ color: COLORS.textDim }}>{c.city || "—"}</td>
+                    <td className="mn-num">{c.orders}</td>
+                    <td className="mn-num" style={{ color: c.returned ? COLORS.negative : COLORS.textFaint }}>
+                      {c.returned || "—"}{c.returned ? ` (${c.returnRate}%)` : ""}
+                    </td>
+                    <td className="mn-num">{fmt(c.lifetime_value)}</td>
+                    <td className="mn-num" style={{ color: c.outstanding > 0 ? COLORS.negative : COLORS.textFaint }}>{c.outstanding > 0 ? fmt(c.outstanding) : "—"}</td>
+                    {isManagerOrAbove && <td className="mn-num" style={{ color: COLORS.textDim }}>{c.return_cost ? fmt(c.return_cost) : "—"}</td>}
+                    <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{c.last_order}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setEditing(c)}>
+                          <Pencil size={11} /> Note
+                        </button>
+                        <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px", color: c.cod_blocked ? COLORS.positive : COLORS.negative }} onClick={() => toggleBlock(c)}>
+                          {c.cod_blocked ? "Unblock" : "Block COD"}
+                        </button>
+                        <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setExpanded(expanded === c.phone_key ? null : c.phone_key)}>
+                          {expanded === c.phone_key ? "Hide" : "History"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Panel>
+                  {expanded === c.phone_key && (
+                    <tr>
+                      <td colSpan={isManagerOrAbove ? 10 : 9} style={{ background: COLORS.surface2, padding: 12 }}>
+                        {historyFor(c.phone_key).length === 0 ? (
+                          <span style={{ fontSize: 12, color: COLORS.textFaint }}>Is number par koi order nahi mila.</span>
+                        ) : historyFor(c.phone_key).map((o) => (
+                          <div key={o.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", gap: 12 }}>
+                            <span style={{ color: COLORS.textDim }}>{o.date} · {o.orderNo}</span>
+                            <span style={{ flex: 1, color: COLORS.textFaint }}>{o.product}</span>
+                            <span className="mn-num">{fmt(o.sell)}</span>
+                            <Badge text={o.status} tone={orderStatusTone[o.status]} />
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function CustomerEditor({ customer, onCancel, onSaved, notify }) {
+  const [notes, setNotes] = useState(customer.notes || "");
+  const [name, setName] = useState(customer.name || "");
+  const [city, setCity] = useState(customer.city || "");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveCustomer(customer.phone, { name, city, notes, cod_blocked: customer.cod_blocked });
+      onSaved();
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>{customer.phone}</span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Name</label>
+          <input className="mn-input" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>City</label>
+          <input className="mn-input" value={city} onChange={(e) => setCity(e.target.value)} />
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Note (order likhte waqt dikhega)</label>
+          <input className="mn-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. 2 baar parcel refuse kiya — advance lein" />
+        </div>
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
   );
 }
 
@@ -1491,7 +1718,7 @@ function AuditLogPanel({ notify }) {
       ) : entries.length === 0 ? (
         <EmptyRow text="Abhi tak koi change record nahi hui." />
       ) : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th>When</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Changed by</th></tr></thead>
           <tbody>
             {entries.map((e) => (
@@ -1505,7 +1732,7 @@ function AuditLogPanel({ notify }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -1688,6 +1915,7 @@ function POS({ data, update, notify, user }) {
         </div>
         <div style={{ marginBottom: 10 }}>
           <input className="mn-input" placeholder="City (optional)" value={city} onChange={(e) => setCity(e.target.value)} />
+          <CustomerRiskBanner phone={phone} />
         </div>
 
         <RowLine label="Subtotal" value={subtotal} />
@@ -1768,7 +1996,7 @@ function Accounts({ accounts, update, notify }) {
         />
       )}
       {accounts.length === 0 ? <EmptyRow text="Koi account add nahi hua." /> : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th>Account</th><th>Type</th><th>Balance</th><th></th></tr></thead>
           <tbody>
             {accounts.map((a) => (
@@ -1780,7 +2008,7 @@ function Accounts({ accounts, update, notify }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -1806,7 +2034,7 @@ function Expenses({ expenses, accounts, update, updateAccounts, notify }) {
         </div>
       )}
       {expenses.length === 0 ? <EmptyRow text="Koi expense record nahi." /> : (
-        <table className="mn-table">
+        <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th>Expense</th><th>Category</th><th>Amount</th><th>Account</th><th>Date</th><th></th></tr></thead>
           <tbody>
             {expenses.map((x) => (
@@ -1820,7 +2048,7 @@ function Expenses({ expenses, accounts, update, updateAccounts, notify }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </Panel>
   );
@@ -1868,6 +2096,7 @@ function ExpenseForm({ accounts, onCancel, onSave }) {
           </select>
         </div>
       </div>
+      {footer && footer(vals)}
       <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
         <button className="mn-btn" onClick={submit}>Save</button>
         <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
@@ -1912,7 +2141,7 @@ function Finance({ data, metrics }) {
         <StatCard label="Net profit" value={fmt(metrics.netProfit)} tone={metrics.netProfit >= 0 ? "positive" : "negative"} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title="Profit and loss" />
           <Row label="Revenue (delivered/shipped orders)" value={metrics.revenue} tone="positive" />
@@ -1947,7 +2176,7 @@ function Finance({ data, metrics }) {
         {ledger.length === 0 ? (
           <EmptyRow text="Koi udhar / partial payment pending nahi." />
         ) : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Customer</th><th>Amount due</th><th>Next due date</th></tr></thead>
             <tbody>
               {ledger.map((l) => (
@@ -1958,7 +2187,7 @@ function Finance({ data, metrics }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>
@@ -2158,7 +2387,7 @@ function Reports({ data, role }) {
         )}
       </ChartCard>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Orders by status" height={240}>
           {!hasOrders ? <EmptyRow text="Koi order nahi." /> : (
             <ResponsiveContainer width="100%" height="100%">
@@ -2218,7 +2447,7 @@ function Reports({ data, role }) {
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
         <SectionHeading title="City-wise performance" />
         {cityStats.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>City</th><th>Orders</th><th>Revenue</th><th>Return rate</th></tr></thead>
             <tbody>
               {cityStats.map((c) => (
@@ -2230,7 +2459,7 @@ function Reports({ data, role }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>
@@ -2318,7 +2547,7 @@ function ProfitTracker({ notify }) {
         <StatCard label="Return rate" value={`${s.returnRate}%`} sub={`${s.returnedOrders} of ${s.orders} orders`} tone={s.returnRate > 20 ? "negative" : undefined} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title="Profit breakdown — paisa kahan gaya" />
           <RowLine label="Revenue (non-returned sales)" value={s.revenue} bold />
@@ -2347,7 +2576,7 @@ function ProfitTracker({ notify }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
             <SectionHeading title="ROAS — asli tasveer" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <StatCard label="Purchase ROAS" value={a.roas.purchase != null ? `${a.roas.purchase}x` : "—"} sub="Har order count hota hai" />
               <StatCard
                 label="Post-delivery ROAS" value={a.roas.postDelivery != null ? `${a.roas.postDelivery}x` : "—"}
@@ -2388,7 +2617,7 @@ function ProfitTracker({ notify }) {
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
         <SectionHeading title="Product-wise profit" />
         {a.byProduct.length === 0 ? <EmptyRow text="Abhi tak koi product bika nahi." /> : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Product</th><th>Units</th><th>Returned</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th></tr></thead>
             <tbody>
               {a.byProduct.map((pr) => (
@@ -2403,7 +2632,7 @@ function ProfitTracker({ notify }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>
@@ -2416,7 +2645,7 @@ function BreakdownTable({ title, rows, keyLabel, hint }) {
       <SectionHeading title={title} />
       {(!rows || rows.length === 0) ? <EmptyRow text="Is period mein koi data nahi." /> : (
         <>
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>{keyLabel}</th><th>Orders</th><th>Delivered</th><th>Returned</th><th>Return rate</th><th>Revenue</th><th>Profit</th></tr></thead>
             <tbody>
               {rows.map((r) => (
@@ -2431,7 +2660,7 @@ function BreakdownTable({ title, rows, keyLabel, hint }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
           {hint && <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>{hint}</div>}
         </>
       )}
@@ -2566,7 +2795,7 @@ function MonthlySheet({ notify }) {
         <StatCard label="Stock invested" value={fmt(sheet.stock?.invested || 0)} sub={`Retail ${fmt(sheet.stock?.retailValue || 0)}`} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title={`Profit & loss — ${sheet.month}`} />
           <RowLine label="Revenue" value={s.revenue} bold />
@@ -2661,7 +2890,7 @@ function AdSpend({ rows, update, notify, role }) {
           />
         )}
         {rows.length === 0 ? <EmptyRow text="Ad spend add karein taake asli ROAS pata chale." /> : (
-          <table className="mn-table">
+          <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Date</th><th>Channel</th><th>Campaign</th><th>Amount</th><th>Notes</th>{isOwner && <th></th>}</tr></thead>
             <tbody>
               {[...rows].sort((a, b) => String(b.date).localeCompare(String(a.date))).map((r) => (
@@ -2675,7 +2904,7 @@ function AdSpend({ rows, update, notify, role }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </Panel>
     </div>
@@ -2736,6 +2965,442 @@ function CostSettings({ settings, onSaved, notify }) {
           </div>
         ))}
         <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save settings"}</button>
+      </div>
+
+      <IntegrationsPanel notify={notify} />
+    </div>
+  );
+}
+
+// Integration status + the manual triggers, so nothing has to be tested
+// by waiting for a cron job to fire.
+function IntegrationsPanel({ notify }) {
+  const [health, setHealth] = useState(null);
+  const [busy, setBusy] = useState("");
+
+  useEffect(() => { whatsappHealth().then(setHealth).catch(() => setHealth({ configured: false })); }, []);
+
+  const run = async (key, fn, label) => {
+    setBusy(key);
+    try {
+      const res = await fn();
+      if (res?.skipped) notify(res.reason || "Skipped");
+      else if (key === "stock") notify(`${res.pushed} item website par update huye${res.failed?.length ? `, ${res.failed.length} fail` : ""}`);
+      else notify(`${label} ho gaya`);
+    } catch (err) {
+      notify(`${label} failed: ${err.message}`);
+    } finally { setBusy(""); }
+  };
+
+  const Row = ({ label, ok, hint }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "5px 0" }}>
+      <span style={{ width: 8, height: 8, borderRadius: 4, background: ok ? COLORS.positive : COLORS.negative, flexShrink: 0 }} />
+      <span style={{ flex: 1 }}>{label}</span>
+      <span style={{ color: COLORS.textFaint, fontSize: 11.5 }}>{ok ? "Ready" : hint}</span>
+    </div>
+  );
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title="Integrations" />
+      <Row label="WhatsApp Cloud API" ok={Boolean(health?.configured)} hint="WHATSAPP_TOKEN / WHATSAPP_PHONE_ID set karein" />
+      <Row label="Daily digest number" ok={Boolean(health?.ownerNumberSet)} hint="OWNER_WHATSAPP set karein" />
+      <Row label="Webhook verify token" ok={Boolean(health?.webhookVerifyTokenSet)} hint="WHATSAPP_VERIFY_TOKEN set karein" />
+
+      <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+        <button className="mn-btn-ghost" disabled={busy === "stock"} onClick={() => run("stock", pushStockToWebsite, "Stock push")}>
+          <RefreshCw size={13} className={busy === "stock" ? "mn-spin" : ""} /> Stock website par bhejein
+        </button>
+        <button className="mn-btn-ghost" disabled={busy === "digest"} onClick={() => run("digest", sendDigestNow, "Digest")}>
+          <MessageCircle size={13} /> Digest abhi bhejein
+        </button>
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+        Stock push khud bhi chalta hai — jab bhi kisi item ki quantity badalti hai (POS sale, return, PO receive) website ka stock update ho jata hai. Ye button sirf sab kuch dobara sync karne ke liye hai.
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Suppliers & purchase orders.
+//
+// Receiving a PO is what actually raises stock and sets the real cost
+// (weighted average against existing stock), so "Real cost" stops being
+// a number somebody types from memory.
+// =====================================================================
+function Suppliers({ suppliers, update, notify, role }) {
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const isOwner = role === "owner";
+  const editingItem = suppliers.find((x) => x.id === editingId);
+
+  const fields = [
+    { key: "name", label: "Supplier name", required: true },
+    { key: "contactPerson", label: "Contact person" },
+    { key: "phone", label: "Phone" },
+    { key: "city", label: "City" },
+    { key: "notes", label: "Notes" },
+  ];
+
+  return (
+    <Panel title="Suppliers" addLabel="Add supplier" onAdd={() => setAdding(true)} count={`${suppliers.length} suppliers`}>
+      {adding && (
+        <AddForm title="New supplier" fields={fields} onCancel={() => setAdding(false)}
+          onSave={(v) => { update((list) => [...list, { id: genId(), ...v }]); setAdding(false); notify("Supplier added"); }} />
+      )}
+      {editingItem && (
+        <AddForm title={`Edit — ${editingItem.name}`} fields={fields} initialValues={editingItem} onCancel={() => setEditingId(null)}
+          onSave={(v) => { update((list) => list.map((x) => (x.id === editingId ? { ...x, ...v } : x))); setEditingId(null); notify("Supplier updated"); }} />
+      )}
+      {suppliers.length === 0 ? <EmptyRow text="Koi supplier add nahi hua." /> : (
+        <div className="mn-tablewrap"><table className="mn-table">
+          <thead><tr><th>Supplier</th><th>Contact</th><th>Phone</th><th>City</th><th>Notes</th><th></th></tr></thead>
+          <tbody>
+            {suppliers.map((sp) => (
+              <tr key={sp.id}>
+                <td>{sp.name}</td>
+                <td style={{ color: COLORS.textDim }}>{sp.contactPerson || "—"}</td>
+                <td style={{ color: COLORS.textDim }}>{sp.phone || "—"}</td>
+                <td style={{ color: COLORS.textDim }}>{sp.city || "—"}</td>
+                <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{sp.notes || "—"}</td>
+                <td style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <button onClick={() => setEditingId(sp.id)} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}><Pencil size={14} /></button>
+                  {isOwner && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== sp.id))} />}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
+    </Panel>
+  );
+}
+
+function Purchases({ suppliers, inventory, notify, role, reload }) {
+  const [rows, setRows] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const isOwner = role === "owner";
+
+  const load = () => listPurchases().then(setRows).catch((err) => notify(`Purchases load failed: ${err.message}`));
+  useEffect(() => { load(); }, []);
+
+  const receive = async (po) => {
+    if (!window.confirm(`${po.po_no} receive karein? Stock barh jayega aur cost update ho jayegi. Ye wapas nahi hota.`)) return;
+    try {
+      const res = await receivePurchase(po.id);
+      const summary = (res.applied || []).map((a) => `${a.name} +${a.added}`).join(", ");
+      notify(summary ? `Received — ${summary}` : "Received");
+      load();
+      reload && reload();
+    } catch (err) { notify(`Receive failed: ${err.message}`); }
+  };
+
+  if (!rows) return <EmptyRow text="Purchase orders load ho rahe hain..." />;
+
+  const pendingValue = rows.filter((r) => r.status !== "Received" && r.status !== "Cancelled").reduce((t, r) => t + Number(r.total || 0), 0);
+  const unpaid = rows.reduce((t, r) => t + Math.max(0, Number(r.total || 0) - Number(r.amount_paid || 0)), 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Purchase orders" value={rows.length} sub={`${rows.filter((r) => r.status === "Received").length} received`} />
+        <StatCard label="Raste mein stock" value={fmt(pendingValue)} sub="Ordered but not received" />
+        <StatCard label="Suppliers ko dena hai" value={fmt(unpaid)} tone={unpaid > 0 ? "negative" : undefined} sub="Total minus paid" />
+      </div>
+
+      {creating && (
+        <PurchaseForm
+          suppliers={suppliers} inventory={inventory}
+          onCancel={() => setCreating(false)}
+          onSaved={() => { setCreating(false); notify("Purchase order banaya gaya"); load(); }}
+          notify={notify}
+        />
+      )}
+
+      {detail && <PurchaseDetail id={detail} onClose={() => setDetail(null)} notify={notify} />}
+
+      <Panel title="Purchase orders" addLabel="New PO" onAdd={() => setCreating(true)} count={`${rows.length} orders`}>
+        {rows.length === 0 ? <EmptyRow text="Koi purchase order nahi. Stock aane par PO banayein — cost khud set ho jayegi." /> : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr><th>PO No</th><th>Supplier</th><th>Date</th><th>Items</th><th>Total</th><th>Paid</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {rows.map((po) => (
+                <tr key={po.id}>
+                  <td>{po.po_no}</td>
+                  <td style={{ color: COLORS.textDim }}>{po.supplier_name || "—"}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(po.date).slice(0, 10)}</td>
+                  <td className="mn-num">{po.item_count}</td>
+                  <td className="mn-num">{fmt(po.total)}</td>
+                  <td className="mn-num" style={{ color: Number(po.amount_paid) >= Number(po.total) ? COLORS.positive : COLORS.negative }}>{fmt(po.amount_paid)}</td>
+                  <td><Badge text={po.status} tone={po.status === "Received" ? "positive" : po.status === "Cancelled" ? "negative" : "accent"} /></td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setDetail(po.id)}>Items</button>
+                      {po.status !== "Received" && po.status !== "Cancelled" && (
+                        <button className="mn-btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => receive(po)}>
+                          <Check size={11} /> Receive
+                        </button>
+                      )}
+                      {isOwner && <DeleteBtn onClick={async () => { await removePurchase(po.id); load(); }} />}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function PurchaseForm({ suppliers, inventory, onCancel, onSaved, notify }) {
+  const [poNo, setPoNo] = useState("PO-" + Math.floor(1000 + Math.random() * 9000));
+  const [supplierId, setSupplierId] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [amountPaid, setAmountPaid] = useState(0);
+  const [notes, setNotes] = useState("");
+  const [items, setItems] = useState([{ key: genId(), inventory_id: "", name: "", sku: "", qty: 1, unit_cost: 0 }]);
+  const [saving, setSaving] = useState(false);
+
+  const setItem = (key, patch) => setItems((list) => list.map((it) => (it.key === key ? { ...it, ...patch } : it)));
+  const addRow = () => setItems((l) => [...l, { key: genId(), inventory_id: "", name: "", sku: "", qty: 1, unit_cost: 0 }]);
+  const removeRow = (key) => setItems((l) => (l.length > 1 ? l.filter((it) => it.key !== key) : l));
+
+  // Picking an existing item fills name/SKU/last cost; leaving it on
+  // "New item" lets you type a product that isn't in inventory yet —
+  // receiving the PO will create it.
+  const pickInventory = (key, id) => {
+    const inv = inventory.find((x) => x.id === id);
+    setItem(key, inv
+      ? { inventory_id: id, name: inv.name, sku: inv.sku || "", unit_cost: Number(inv.cost) || 0 }
+      : { inventory_id: "", name: "", sku: "" });
+  };
+
+  const total = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unit_cost) || 0), 0);
+
+  const save = async () => {
+    const clean = items.filter((it) => String(it.name).trim() && Number(it.qty) > 0);
+    if (clean.length === 0) return notify("Kam az kam ek item add karein");
+    setSaving(true);
+    try {
+      await createPurchase({
+        po_no: poNo, supplier_id: supplierId || null, date, notes,
+        amount_paid: Number(amountPaid) || 0,
+        items: clean.map((it) => ({
+          inventory_id: it.inventory_id || null, name: it.name, sku: it.sku,
+          qty: Number(it.qty), unit_cost: Number(it.unit_cost),
+        })),
+      });
+      onSaved();
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title="New purchase order" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>PO number</label>
+          <input className="mn-input" value={poNo} onChange={(e) => setPoNo(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Supplier</label>
+          <select className="mn-input" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+            <option value="">— select —</option>
+            {suppliers.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Date</label>
+          <input className="mn-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Supplier ko diya (Rs)</label>
+          <input className="mn-input" type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr><th>Item</th><th>Name</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
+        <tbody>
+          {items.map((it) => (
+            <tr key={it.key}>
+              <td style={{ minWidth: 160 }}>
+                <select className="mn-input" value={it.inventory_id} onChange={(e) => pickInventory(it.key, e.target.value)}>
+                  <option value="">+ New item</option>
+                  {inventory.map((inv) => (
+                    <option key={inv.id} value={inv.id}>
+                      {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td><input className="mn-input" value={it.name} onChange={(e) => setItem(it.key, { name: e.target.value })} placeholder="Item name" /></td>
+              <td><input className="mn-input" style={{ width: 100 }} value={it.sku} onChange={(e) => setItem(it.key, { sku: e.target.value })} /></td>
+              <td><input className="mn-input" style={{ width: 70 }} type="number" value={it.qty} onChange={(e) => setItem(it.key, { qty: e.target.value })} /></td>
+              <td><input className="mn-input" style={{ width: 90 }} type="number" value={it.unit_cost} onChange={(e) => setItem(it.key, { unit_cost: e.target.value })} /></td>
+              <td className="mn-num">{fmt((Number(it.qty) || 0) * (Number(it.unit_cost) || 0))}</td>
+              <td><button onClick={() => removeRow(it.key)} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={14} /></button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+        <button className="mn-btn-ghost" onClick={addRow}><Plus size={13} /> Add row</button>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>Total: <span className="mn-num">{fmt(total)}</span></div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <input className="mn-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save PO"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+        PO save karne se stock nahi barhta. Jab maal pahunch jaye tab <b style={{ color: COLORS.textDim }}>Receive</b> dabayein — tab quantity add hogi aur cost weighted average se update hogi.
+      </div>
+    </div>
+  );
+}
+
+function PurchaseDetail({ id, onClose, notify }) {
+  const [po, setPo] = useState(null);
+  useEffect(() => { getPurchase(id).then(setPo).catch((err) => notify(`Load failed: ${err.message}`)); }, [id]);
+  if (!po) return null;
+  return (
+    <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>{po.po_no} — {po.supplier_name || "No supplier"}</span>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr><th>Item</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Total</th></tr></thead>
+        <tbody>
+          {po.items.map((it) => (
+            <tr key={it.id}>
+              <td>{it.name}</td>
+              <td style={{ color: COLORS.textDim }}>{it.sku || "—"}</td>
+              <td className="mn-num">{Number(it.qty)}</td>
+              <td className="mn-num">{fmt(it.unit_cost)}</td>
+              <td className="mn-num">{fmt(Number(it.qty) * Number(it.unit_cost))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      {po.notes && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 10 }}>{po.notes}</div>}
+    </div>
+  );
+}
+
+// =====================================================================
+// WhatsApp order confirmation cell.
+//
+// In a COD business this is the single biggest lever on return rate:
+// send the message, ship only what gets a reply. The customer's "HAAN"
+// updates the status automatically via the webhook; the dropdown is
+// there for the ones who reply by phone call instead.
+// =====================================================================
+const CONFIRM_TONE = {
+  Confirmed: "positive",
+  Sent: "info",
+  Cancelled: "negative",
+  "No response": "negative",
+  "Not sent": undefined,
+};
+
+function ConfirmationCell({ order, notify, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const status = order.confirmationStatus || "Not sent";
+
+  const send = async () => {
+    if (!order.phone) return notify("Is order par phone number nahi hai");
+    setBusy(true);
+    try {
+      await sendConfirmation(order.id);
+      notify("WhatsApp confirmation bhej diya");
+      onChanged && onChanged();
+    } catch (err) {
+      notify(`WhatsApp failed: ${err.message}`);
+    } finally { setBusy(false); }
+  };
+
+  const setStatus = async (value) => {
+    setBusy(true);
+    try {
+      await setConfirmationStatus(order.id, value);
+      onChanged && onChanged();
+    } catch (err) {
+      notify(`Update failed: ${err.message}`);
+    } finally { setBusy(false); }
+  };
+
+  if (order.status === "Returned") return <span style={{ color: COLORS.textFaint, fontSize: 12 }}>—</span>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 118 }}>
+      <Badge text={status} tone={CONFIRM_TONE[status]} />
+      <div style={{ display: "flex", gap: 4 }}>
+        {status !== "Confirmed" && (
+          <button
+            onClick={send} disabled={busy || !order.phone} title={order.phone ? "WhatsApp bhejein" : "Phone number nahi hai"}
+            style={{ background: "none", border: "none", cursor: order.phone ? "pointer" : "not-allowed", color: order.phone ? COLORS.positive : COLORS.textFaint, padding: 0, display: "flex", alignItems: "center", gap: 3, fontSize: 11, fontFamily: "inherit" }}
+          >
+            <MessageCircle size={12} /> {status === "Sent" ? "Dobara" : "Bhejein"}
+          </button>
+        )}
+        <select
+          value={status} disabled={busy} onChange={(e) => setStatus(e.target.value)}
+          style={{ background: "none", border: "none", color: COLORS.textFaint, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          {["Not sent", "Sent", "Confirmed", "No response", "Cancelled"].map((x) => <option key={x} value={x}>{x}</option>)}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// Shown while writing a new order: as soon as a phone number is typed,
+// this checks the customer's history and warns before the parcel is booked.
+function CustomerRiskBanner({ phone }) {
+  const [risk, setRisk] = useState(null);
+
+  useEffect(() => {
+    const digits = String(phone || "").replace(/[^0-9]/g, "");
+    if (digits.length < 7) { setRisk(null); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      customerRisk(digits).then((r) => { if (alive) setRisk(r); }).catch(() => {});
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [phone]);
+
+  if (!risk || !risk.found) return null;
+
+  const danger = risk.risky || risk.codBlocked;
+  return (
+    <div style={{
+      marginTop: 10, padding: "10px 12px", borderRadius: 7, fontSize: 12.5,
+      background: danger ? COLORS.negativeDim : COLORS.surface,
+      border: `1px solid ${danger ? COLORS.negative : COLORS.border}`,
+      color: danger ? COLORS.negative : COLORS.textDim,
+      display: "flex", alignItems: "flex-start", gap: 8,
+    }}>
+      {danger ? <ShieldAlert size={15} style={{ flexShrink: 0, marginTop: 1 }} /> : <BookUser size={15} style={{ flexShrink: 0, marginTop: 1, color: COLORS.textFaint }} />}
+      <div>
+        {risk.codBlocked && <div><b>COD blocked customer.</b> Sirf advance par bhejein.</div>}
+        {!risk.codBlocked && risk.risky && <div><b>{risk.returned} parcel return kar chuke hain.</b> Advance lena behtar hai.</div>}
+        <div style={{ color: danger ? COLORS.negative : COLORS.textFaint }}>
+          {risk.orders} purane order · lifetime {fmt(risk.lifetimeValue)}
+          {risk.returned > 0 && !risk.risky ? ` · ${risk.returned} return` : ""}
+        </div>
+        {risk.notes && <div style={{ marginTop: 3, fontStyle: "italic" }}>{risk.notes}</div>}
       </div>
     </div>
   );

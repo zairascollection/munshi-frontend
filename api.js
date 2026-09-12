@@ -73,13 +73,15 @@ const FIELD_MAPS = {
     orderNo: "order_no", amountPaid: "amount_paid", dueDate: "due_date",
     billedBy: "billed_by", returnReason: "return_reason",
     deliveryCharge: "delivery_charge", returnCharge: "return_charge",
+    confirmationStatus: "confirmation_status", confirmedAt: "confirmed_at",
     refundAmount: "refund_amount", returnedAt: "returned_at", deliveredAt: "delivered_at",
   },
   "ad-spend": {},
+  suppliers: { contactPerson: "contact_person" },
   employees: { paidFrom: "account_id" },
   affiliates: { paidFrom: "account_id" },
   expenses: { accountId: "account_id" },
-  inventory: {},
+  inventory: { parentName: "parent_name", supplierId: "supplier_id" },
   accounts: {},
 };
 
@@ -89,6 +91,7 @@ const NUMERIC_FIELDS = {
   inventory: ["quantity", "reorder", "cost", "price"],
   orders: ["qty", "sell", "cost", "amountPaid", "deliveryCharge", "returnCharge", "refundAmount"],
   "ad-spend": ["amount"],
+  suppliers: [],
   employees: ["salary"],
   affiliates: ["rate", "sales", "commission"],
   accounts: ["balance"],
@@ -187,4 +190,54 @@ export async function getSavedSheets() {
 }
 export async function getSavedSheet(month) {
   return request(`/reports/saved/${month}`);
+}
+
+// --- Customers (ledger + risk) ---
+export async function listCustomers() {
+  return request("/customers");
+}
+export async function customerRisk(phone) {
+  return request(`/customers/risk/${encodeURIComponent(phone)}`);
+}
+export async function saveCustomer(phone, patch) {
+  return request(`/customers/${encodeURIComponent(phone)}`, { method: "PUT", body: patch });
+}
+
+// --- Purchase orders ---
+export async function listPurchases() {
+  return request("/purchases");
+}
+export async function getPurchase(id) {
+  return request(`/purchases/${id}`);
+}
+export async function createPurchase(po) {
+  return request("/purchases", { method: "POST", body: po });
+}
+export async function receivePurchase(id) {
+  return request(`/purchases/${id}/receive`, { method: "POST" });
+}
+export async function removePurchase(id) {
+  return request(`/purchases/${id}`, { method: "DELETE" });
+}
+
+// --- WhatsApp ---
+export async function whatsappHealth() {
+  return request("/whatsapp/health");
+}
+export async function sendConfirmation(orderId) {
+  return request(`/whatsapp/confirm/${orderId}`, { method: "POST" });
+}
+export async function sendConfirmationBulk(ids) {
+  return request("/whatsapp/confirm-bulk", { method: "POST", body: { ids } });
+}
+export async function setConfirmationStatus(orderId, status) {
+  return request(`/whatsapp/status/${orderId}`, { method: "PUT", body: { status } });
+}
+export async function sendDigestNow() {
+  return request("/alerts/digest", { method: "POST" });
+}
+
+// --- Push stock to the website ---
+export async function pushStockToWebsite() {
+  return request("/sync/stock", { method: "POST" });
 }
