@@ -3,14 +3,19 @@ import {
   LayoutGrid, Boxes, Truck, Users, Wallet, Share2, Plus, Trash2,
   TrendingUp, TrendingDown, AlertTriangle, Search, X, ChevronRight,
   BarChart3, ImageIcon, ShieldCheck, User, Receipt, Minus, Printer, BookUser,
-  Landmark, ScanLine, LogOut, RefreshCw, Pencil,
+  Landmark, ScanLine, LogOut, RefreshCw, Pencil, Undo2, Megaphone,
+  Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import Login from "./Login";
-import { api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser, changePassword, sendLowStockAlert } from "./api";
+import {
+  api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
+  changePassword, sendLowStockAlert, getAuditLog,
+  returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
+} from "./api";
 
 const COLORS = {
   bg: "#0F161F",
@@ -55,12 +60,26 @@ const NAV = [
   { id: "orders", label: "Orders & parcels", icon: Truck, ownerOnly: false },
   { id: "customers", label: "Customers", icon: BookUser, ownerOnly: false },
   { id: "employees", label: "Employees", icon: Users, ownerOnly: false },
+  { id: "returns", label: "Returns", icon: Undo2, ownerOnly: false },
   { id: "reports", label: "Reports", icon: BarChart3, ownerOnly: false },
-  { id: "finance", label: "Finance", icon: Wallet, ownerOnly: true },
+  { id: "profit", label: "Profit tracker", icon: TrendingUp, ownerOnly: true, managerOk: true },
+  { id: "monthly", label: "Monthly sheet", icon: CalendarDays, ownerOnly: true, managerOk: true },
+  { id: "adspend", label: "Ad spend", icon: Megaphone, ownerOnly: true, managerOk: true },
+  { id: "finance", label: "Finance", icon: Wallet, ownerOnly: true, managerOk: true },
   { id: "accounts", label: "Accounts", icon: Landmark, ownerOnly: true },
-  { id: "expenses", label: "Expenses", icon: TrendingDown, ownerOnly: true },
-  { id: "affiliates", label: "Affiliates", icon: Share2, ownerOnly: true },
+  { id: "expenses", label: "Expenses", icon: TrendingDown, ownerOnly: true, managerOk: true },
+  { id: "affiliates", label: "Affiliates", icon: Share2, ownerOnly: true, managerOk: true },
   { id: "team", label: "Team", icon: Users, ownerOnly: true },
+  { id: "settings", label: "Cost settings", icon: SettingsIcon, ownerOnly: true },
+  { id: "history", label: "Change history", icon: HistoryIcon, ownerOnly: true },
+];
+
+// Sidebar sections — with 15 screens a flat list is hard to scan, so the
+// nav is grouped by what you're actually trying to do.
+const NAV_SECTIONS = [
+  { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers"] },
+  { title: "Paisa", ids: ["profit", "monthly", "reports", "finance", "accounts", "expenses", "adspend"] },
+  { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
 ];
 
 const CHART_COLORS = ["#E8A33D", "#5B9BD5", "#3FB68A", "#E2574C", "#9B7EDE", "#4FC3C7"];
@@ -69,15 +88,17 @@ const accountName = (accounts, id) => ((accounts || []).find((a) => a.id === id)
 
 // Resources fetched on login. Owner-only ones are skipped for staff
 // (the backend would 403 them anyway — no point making the calls).
-const OWNER_ONLY_KEYS = new Set(["accounts", "expenses", "affiliates"]);
-const ALL_KEYS = ["inventory", "orders", "employees", "affiliates", "accounts", "expenses"];
+const OWNER_ONLY_KEYS = new Set(["accounts"]);
+const MANAGER_OK_KEYS = new Set(["expenses", "affiliates", "ad-spend"]);
+const ALL_KEYS = ["inventory", "orders", "employees", "affiliates", "accounts", "expenses", "ad-spend"];
 
 export default function App() {
   const [user, setUser] = useState(null); // { id, name, email, role } once logged in
   const [authChecked, setAuthChecked] = useState(false);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState("dashboard");
-  const [data, setData] = useState({ inventory: [], orders: [], employees: [], affiliates: [], accounts: [], expenses: [] });
+  const [data, setData] = useState({ inventory: [], orders: [], employees: [], affiliates: [], accounts: [], expenses: [], "ad-spend": [] });
+  const [settings, setSettings] = useState({ default_delivery_charge: 0, default_return_charge: 0, cash_handling_pct: 0, tax_pct: 0, packaging_cost: 0 });
   const [toast, setToast] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [changingPw, setChangingPw] = useState(false);
@@ -105,7 +126,7 @@ export default function App() {
 
   const loadAll = useCallback(async (role) => {
     setReady(false);
-    const keys = ALL_KEYS.filter((k) => role === "owner" || !OWNER_ONLY_KEYS.has(k));
+    const keys = ALL_KEYS.filter((k) => role === "owner" || (role === "manager" && !OWNER_ONLY_KEYS.has(k)) || (!OWNER_ONLY_KEYS.has(k) && !MANAGER_OK_KEYS.has(k)));
     const results = await Promise.all(keys.map((k) => api.list(k).catch(() => [])));
     setData((d) => {
       const next = { ...d };
@@ -118,6 +139,12 @@ export default function App() {
   useEffect(() => {
     if (user) loadAll(user.role);
   }, [user, loadAll]);
+
+  // COD charge defaults — read by everyone so POS/Orders can pre-fill them.
+  useEffect(() => {
+    if (!user) return;
+    getSettings().then(setSettings).catch(() => {});
+  }, [user]);
 
   const role = user?.role || "staff";
   const logout = () => { setToken(null); setUser(null); };
@@ -184,7 +211,7 @@ export default function App() {
 
   useEffect(() => {
     const item = NAV.find((n) => n.id === tab);
-    if (item && item.ownerOnly && role !== "owner") setTab("dashboard");
+    if (item && item.ownerOnly && !(role === "owner" || (item.managerOk && role === "manager"))) setTab("dashboard");
   }, [role, tab]);
 
   const metrics = useMemo(() => {
@@ -273,15 +300,21 @@ export default function App() {
           {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} notify={notify} />}
           {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} />}
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
-          {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
+          {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
+          {tab === "returns" && <Returns orders={data.orders} notify={notify} role={role} settings={settings} reload={() => loadAll(role)} />}
           {tab === "customers" && <Customers orders={data.orders} />}
           {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
-          {tab === "reports" && <Reports data={data} />}
-          {tab === "finance" && role === "owner" && <Finance data={data} metrics={metrics} />}
+          {tab === "reports" && <Reports data={data} role={role} />}
+          {tab === "profit" && (role === "owner" || role === "manager") && <ProfitTracker notify={notify} />}
+          {tab === "monthly" && (role === "owner" || role === "manager") && <MonthlySheet notify={notify} />}
+          {tab === "adspend" && (role === "owner" || role === "manager") && <AdSpend rows={data["ad-spend"] || []} update={(fn) => update("ad-spend", fn)} notify={notify} role={role} />}
+          {tab === "finance" && (role === "owner" || role === "manager") && <Finance data={data} metrics={metrics} />}
           {tab === "accounts" && role === "owner" && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
-          {tab === "expenses" && role === "owner" && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
-          {tab === "affiliates" && role === "owner" && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
+          {tab === "expenses" && (role === "owner" || role === "manager") && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
+          {tab === "affiliates" && (role === "owner" || role === "manager") && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "team" && role === "owner" && <Team notify={notify} currentUserId={user.id} />}
+          {tab === "settings" && role === "owner" && <CostSettings settings={settings} onSaved={setSettings} notify={notify} />}
+          {tab === "history" && role === "owner" && <AuditLogPanel notify={notify} />}
         </div>
       </div>
 
@@ -298,7 +331,7 @@ export default function App() {
 
 function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, onChangePassword }) {
   const alerts = metrics.lowStock.length;
-  const visibleNav = NAV.filter((n) => !n.ownerOnly || role === "owner");
+  const visibleNav = NAV.filter((n) => !n.ownerOnly || role === "owner" || (n.managerOk && role === "manager"));
   return (
     <div style={{ width: 208, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, padding: "20px 14px", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "0 8px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
@@ -312,7 +345,7 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
         {role === "owner" ? <ShieldCheck size={14} color={COLORS.accent} /> : <User size={14} color={COLORS.info} />}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user?.name}</div>
-          <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{role === "owner" ? "Owner" : "Staff"}</div>
+          <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{role === "owner" ? "Owner" : role === "manager" ? "Manager" : "Staff"}</div>
         </div>
         <button onClick={onLogout} title="Log out" style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}>
           <LogOut size={14} />
@@ -329,36 +362,47 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
           <RefreshCw size={13} className={syncing ? "mn-spin" : ""} /> {syncing ? "Syncing..." : "Sync WooCommerce"}
         </button>
       )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {visibleNav.map((n) => {
-          const Icon = n.icon;
-          const active = tab === n.id;
-          const showAlert = n.id === "inventory" && alerts > 0;
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }} className="mn-scroll">
+        {NAV_SECTIONS.map((section) => {
+          const items = section.ids.map((id) => visibleNav.find((n) => n.id === id)).filter(Boolean);
+          if (items.length === 0) return null;
           return (
-            <button
-              key={n.id}
-              onClick={() => setTab(n.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 7,
-                background: active ? COLORS.surface2 : "transparent",
-                border: "none", cursor: "pointer", textAlign: "left", width: "100%",
-                color: active ? COLORS.text : COLORS.textDim, fontSize: 13.5, fontFamily: "inherit",
-                fontWeight: active ? 600 : 400,
-              }}
-            >
-              <Icon size={16} style={{ flexShrink: 0, color: active ? COLORS.accent : COLORS.textFaint }} />
-              <span style={{ flex: 1 }}>{n.label}</span>
-              {showAlert && (
-                <span style={{ background: COLORS.negative, color: "#fff", fontSize: 10.5, fontWeight: 600, borderRadius: 10, padding: "1px 6px" }}>
-                  {alerts}
-                </span>
-              )}
-            </button>
+            <Fragment key={section.title}>
+              <div style={{ fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", color: COLORS.textFaint, padding: "12px 10px 5px" }}>
+                {section.title}
+              </div>
+              {items.map((n) => {
+                const Icon = n.icon;
+                const active = tab === n.id;
+                const showAlert = n.id === "inventory" && alerts > 0;
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => setTab(n.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 7,
+                      background: active ? COLORS.surface2 : "transparent",
+                      border: "none", cursor: "pointer", textAlign: "left", width: "100%",
+                      color: active ? COLORS.text : COLORS.textDim, fontSize: 13, fontFamily: "inherit",
+                      fontWeight: active ? 600 : 400,
+                    }}
+                  >
+                    <Icon size={15} style={{ flexShrink: 0, color: active ? COLORS.accent : COLORS.textFaint }} />
+                    <span style={{ flex: 1 }}>{n.label}</span>
+                    {showAlert && (
+                      <span style={{ background: COLORS.negative, color: "#fff", fontSize: 10.5, fontWeight: 600, borderRadius: 10, padding: "1px 6px" }}>
+                        {alerts}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </Fragment>
           );
         })}
       </div>
       <div style={{ marginTop: "auto", padding: "12px 10px", borderTop: `1px solid ${COLORS.borderSoft}`, fontSize: 11.5, color: COLORS.textFaint }}>
-        {role === "staff" ? "Staff view — cost, finance & profit hidden." : "Owner view — full access."} Data saves automatically.
+        {role === "staff" ? "Staff view — finance & profit hidden." : role === "manager" ? "Manager view — no delete, no Team/Accounts." : "Owner view — full access."} Data saves automatically.
       </div>
     </div>
   );
@@ -371,7 +415,7 @@ function TopBar({ tab, role }) {
     <div style={{ padding: "18px 28px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <h2 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 19, fontWeight: 600, margin: 0 }}>{label}</h2>
-        <Badge text={role === "owner" ? "Owner view" : "Staff view"} tone={role === "owner" ? "accent" : "info"} />
+        <Badge text={role === "owner" ? "Owner view" : role === "manager" ? "Manager view" : "Staff view"} tone={role === "owner" ? "accent" : "info"} />
       </div>
       <span style={{ fontSize: 12.5, color: COLORS.textFaint }}>{date}</span>
     </div>
@@ -423,8 +467,29 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
       setSendingAlert(false);
     }
   };
+  const isManagerOrAbove = role === "owner" || role === "manager";
+  // One-tap shortcuts for the five things done most often, so nobody has
+  // to hunt through the sidebar for routine work.
+  const quickActions = [
+    { id: "pos", label: "Nayi sale", icon: Receipt },
+    { id: "inventory", label: "Stock add", icon: Boxes },
+    { id: "returns", label: "Return record", icon: Undo2 },
+    ...(isManagerOrAbove ? [{ id: "profit", label: "Aaj ka munafa", icon: TrendingUp }] : []),
+    ...(isManagerOrAbove ? [{ id: "monthly", label: "Monthly sheet", icon: CalendarDays }] : []),
+  ];
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {quickActions.map((q) => {
+          const Icon = q.icon;
+          return (
+            <button key={q.id} className="mn-btn-ghost" onClick={() => setTab(q.id)} style={{ fontSize: 12.5 }}>
+              <Icon size={14} /> {q.label}
+            </button>
+          );
+        })}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
         <StatCard label="Total revenue" value={fmt(metrics.revenue)} />
         <StatCard label="Net profit" value={fmt(metrics.netProfit)} tone={metrics.netProfit >= 0 ? "positive" : "negative"} />
@@ -433,8 +498,8 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
         <StatCard label="Pending to pay" value={fmt(metrics.payable)} tone="negative" sub="Salaries + commissions" />
         <StatCard label="Active parcels" value={metrics.activeParcels} sub="In transit or pending" />
         <StatCard label="Low stock items" value={metrics.lowStock.length} tone={metrics.lowStock.length ? "negative" : undefined} />
-        {isOwner && <StatCard label="Stock investment" value={fmt(metrics.stockInvestment)} sub={`${metrics.stockUnits} units at cost price`} />}
-        {isOwner && <StatCard label="Stock value at sale price" value={fmt(metrics.stockSaleValue)} sub="If everything sells" />}
+        <StatCard label="Stock investment" value={fmt(metrics.stockInvestment)} sub={`${metrics.stockUnits} units at cost price`} />
+        {isManagerOrAbove && <StatCard label="Stock value at sale price" value={fmt(metrics.stockSaleValue)} sub="If everything sells" />}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
@@ -512,7 +577,7 @@ function Panel({ title, count, onAdd, addLabel, children, extra }) {
         <div style={{ fontSize: 13, color: COLORS.textDim }}>{count}</div>
         <div style={{ display: "flex", gap: 8 }}>
           {extra}
-          <button className="mn-btn" onClick={onAdd}><Plus size={14} /> {addLabel}</button>
+          {onAdd && <button className="mn-btn" onClick={onAdd}><Plus size={14} /> {addLabel}</button>}
         </div>
       </div>
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, overflow: "hidden" }}>
@@ -641,7 +706,10 @@ function Inventory({ items, update, notify, role }) {
     { key: "image", label: "Photo (optional)", type: "file" },
     { key: "quantity", label: "Quantity", type: "number", default: 0 },
     { key: "reorder", label: "Reorder level", type: "number", default: 5 },
-    ...(isOwner ? [{ key: "cost", label: "Cost price (Rs)", type: "number", default: 0 }] : []),
+    // Real (purchase) cost is visible and editable for EVERY role — staff,
+    // manager and owner. Nothing is hidden; instead every edit is written to
+    // the change history so the owner can see who changed what.
+    { key: "cost", label: "Real cost — purchase (Rs)", type: "number", default: 0 },
     { key: "price", label: "Selling price (Rs)", type: "number", default: 0 },
   ];
 
@@ -651,6 +719,9 @@ function Inventory({ items, update, notify, role }) {
       count={`${items.length} items`}
       extra={<SearchBox value={q} onChange={setQ} />}
     >
+      <div style={{ padding: "10px 18px", fontSize: 11.5, color: COLORS.textFaint, borderBottom: `1px solid ${COLORS.borderSoft}` }}>
+        Real cost sab ko dikhti hai aur sab edit kar sakte hain — lekin har tabdeeli owner ke <b style={{ color: COLORS.textDim }}>Change history</b> mein save hoti hai (kis ne, kab, kya se kya kiya).
+      </div>
       {adding && (
         <AddForm
           title="New inventory item" fields={baseFields} onCancel={() => setAdding(false)}
@@ -666,7 +737,7 @@ function Inventory({ items, update, notify, role }) {
           title={`Edit — ${editingItem.name}`} fields={baseFields} initialValues={editingItem} onCancel={() => setEditingId(null)}
           onSave={(v) => {
             update((list) => list.map((x) => x.id === editingId
-              ? { ...x, ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: isOwner ? Number(v.cost || 0) : x.cost, price: Number(v.price) }
+              ? { ...x, ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: Number(v.cost || 0), price: Number(v.price) }
               : x
             ));
             setEditingId(null);
@@ -676,10 +747,13 @@ function Inventory({ items, update, notify, role }) {
       )}
       {filtered.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : (
         <table className="mn-table">
-          <thead><tr><th></th><th>Item</th><th>SKU</th><th>Category</th><th>Qty</th>{isOwner && <th>Cost</th>}<th>Price</th><th></th></tr></thead>
+          <thead><tr><th></th><th>Item</th><th>SKU</th><th>Category</th><th>Qty</th><th>Real cost</th><th>Price</th><th>Margin</th><th>Stock value</th><th></th></tr></thead>
           <tbody>
             {filtered.map((i) => {
               const low = Number(i.quantity) <= Number(i.reorder);
+              const margin = Number(i.price) > 0
+                ? Math.round(((Number(i.price) - Number(i.cost || 0)) / Number(i.price)) * 100)
+                : 0;
               return (
                 <tr key={i.id}>
                   <td><Thumb url={i.image} size={52} /></td>
@@ -687,8 +761,10 @@ function Inventory({ items, update, notify, role }) {
                   <td style={{ color: COLORS.textFaint }}>{i.sku}</td>
                   <td style={{ color: COLORS.textDim }}>{i.category}</td>
                   <td className="mn-num" style={{ color: low ? COLORS.negative : COLORS.text }}>{i.quantity}{low && " ⚠"}</td>
-                  {isOwner && <td className="mn-num">{fmt(i.cost)}</td>}
+                  <td className="mn-num">{fmt(i.cost)}</td>
                   <td className="mn-num">{fmt(i.price)}</td>
+                  <td className="mn-num" style={{ color: margin >= 30 ? COLORS.positive : margin > 0 ? COLORS.accent : COLORS.negative }}>{margin}%</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{fmt(Number(i.cost || 0) * Number(i.quantity || 0))}</td>
                   <td style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                     <button onClick={() => setEditingId(i.id)} title="Edit" style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}>
                       <Pencil size={14} />
@@ -746,34 +822,43 @@ function PaymentEditor({ order, accounts, onSave, onClose }) {
   );
 }
 
-function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
+function Orders({ orders, accounts, update, updateAccounts, notify, role, user, settings, reload }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [returning, setReturning] = useState(null);
   const isOwner = role === "owner";
+  const isManagerOrAbove = role === "owner" || role === "manager";
   const fields = [
     { key: "orderNo", label: "Order No", default: "ORD-" + Math.floor(1000 + Math.random() * 9000), required: true },
     { key: "customer", label: "Customer name", required: true },
+    { key: "city", label: "City" },
     { key: "product", label: "Product" },
     { key: "qty", label: "Qty", type: "number", default: 1 },
     { key: "sell", label: "Sale amount (Rs)", type: "number", default: 0 },
-    ...(isOwner ? [{ key: "cost", label: "Cost amount (Rs)", type: "number", default: 0 }] : []),
+    ...(isManagerOrAbove ? [{ key: "cost", label: "Cost amount (Rs)", type: "number", default: 0 }] : []),
     { key: "courier", label: "Courier", type: "select", options: ["Leopards", "TCS", "M&P", "Trax", "PostEx", "Other"] },
     { key: "tracking", label: "Tracking No" },
+    { key: "channel", label: "Sales channel", type: "select", options: ["Website", "Instagram", "WhatsApp", "Facebook", "Walk-in / POS", "Other"] },
+    { key: "deliveryCharge", label: "Delivery charge (Rs)", type: "number", default: settings?.default_delivery_charge || 0 },
     { key: "status", label: "Status", type: "select", options: ["Pending", "Shipped", "Delivered", "Returned"] },
     { key: "amountPaid", label: "Amount received now (Rs)", type: "number", default: 0 },
     { key: "method", label: "Payment method", type: "select", options: ["COD", "Bank Transfer", "JazzCash", "EasyPaisa"] },
+    // Who wrote this bill. Pre-filled with the logged-in user but editable,
+    // so an owner entering yesterday's counter sales can credit the right person.
+    { key: "billedBy", label: "Billed by", default: user?.name || "" },
   ];
 
+  // Clicking the status badge cycles Pending -> Shipped -> Delivered.
+  // Returns are deliberately NOT part of the cycle any more — they open the
+  // proper return form instead (reason + refund + return charge + restock).
   const cycleStatus = (o) => {
-    const order = ["Pending", "Shipped", "Delivered", "Returned"];
-    const next = order[(order.indexOf(o.status) + 1) % order.length];
-    if (next === "Returned") {
-      const reason = window.prompt("Return ki wajah likhein (size, quality, mind change, waghera):", "");
-      if (reason === null) return; // cancelled — leave status unchanged
-      update((list) => list.map((x) => (x.id === o.id ? { ...x, status: next, returnReason: reason } : x)));
-      return;
-    }
-    update((list) => list.map((x) => (x.id === o.id ? { ...x, status: next } : x)));
+    if (o.status === "Returned") return;
+    const order = ["Pending", "Shipped", "Delivered"];
+    const idx = order.indexOf(o.status);
+    const next = order[(idx + 1) % order.length];
+    const patch = { status: next };
+    if (next === "Delivered") patch.deliveredAt = todayISO();
+    update((list) => list.map((x) => (x.id === o.id ? { ...x, ...patch } : x)));
   };
   const savePayment = (o, patch, accountId, delta) => {
     update((list) => list.map((x) => (x.id === o.id ? { ...x, ...patch } : x)));
@@ -795,9 +880,17 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
           }}
         />
       )}
+      {returning && (
+        <ReturnForm
+          order={returning}
+          settings={settings}
+          onCancel={() => setReturning(null)}
+          onDone={(msg) => { setReturning(null); notify(msg); reload && reload(); }}
+        />
+      )}
       {orders.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
         <table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Billed by</th><th>Payment</th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
           <tbody>
             {orders.map((o) => {
               const pStatus = paymentStatusOf(o);
@@ -823,6 +916,13 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
                       <PaymentEditor order={o} accounts={accounts || []} onClose={() => setEditingId(null)} onSave={(patch, accountId, delta) => savePayment(o, patch, accountId, delta)} />
                     )}
                   </td>
+                  <td>
+                    {o.status !== "Returned" && (
+                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setReturning(o)}>
+                        <Undo2 size={12} /> Return
+                      </button>
+                    )}
+                  </td>
                   {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== o.id))} /></td>}
                 </tr>
               );
@@ -831,6 +931,188 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role }) {
         </table>
       )}
     </Panel>
+  );
+}
+
+// ---------------------------------------------------------------
+// Return form — one screen that does the whole return:
+// reason, refund given back, courier's return charge, and whether the
+// stock goes back on the shelf. The backend does all four in one
+// transaction and writes it to the change history.
+// ---------------------------------------------------------------
+const RETURN_REASONS = ["Size issue", "Quality issue", "Wrong item sent", "Customer changed mind", "Damaged in transit", "Not received / refused", "Other"];
+
+function ReturnForm({ order, settings, onCancel, onDone }) {
+  const [reason, setReason] = useState(RETURN_REASONS[0]);
+  const [note, setNote] = useState("");
+  const [refundAmount, setRefundAmount] = useState(Number(order.amountPaid || 0));
+  const [returnCharge, setReturnCharge] = useState(Number(settings?.default_return_charge || 0));
+  const [restock, setRestock] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loss = Number(returnCharge || 0) + Number(refundAmount || 0) + Number(order.deliveryCharge || 0);
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
+      const res = await returnOrder(order.id, {
+        reason: fullReason,
+        refundAmount: Number(refundAmount) || 0,
+        returnCharge: Number(returnCharge) || 0,
+        restock,
+      });
+      const back = (res.restocked || []).map((r) => `${r.name} +${r.added}`).join(", ");
+      onDone(back ? `Return saved. Stock wapas: ${back}` : "Return saved");
+    } catch (err) {
+      onDone(`Return failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 18, borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface2 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>Return — {order.orderNo} · {order.customer}</span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Return reason</label>
+          <select className="mn-input" value={reason} onChange={(e) => setReason(e.target.value)}>
+            {RETURN_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Detail (optional)</label>
+          <input className="mn-input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. medium chahiye tha" />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Refund to customer (Rs)</label>
+          <input className="mn-input" type="number" value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Courier return charge (Rs)</label>
+          <input className="mn-input" type="number" value={returnCharge} onChange={(e) => setReturnCharge(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Stock wapas inventory mein?</label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, paddingTop: 6 }}>
+            <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} />
+            {restock ? "Haan — quantity add ho jayegi" : "Nahi — item damaged / khatam"}
+          </label>
+        </div>
+      </div>
+      <div style={{ marginTop: 12, fontSize: 12.5, color: COLORS.negative }}>
+        Is return ka total nuqsan: <span className="mn-num">{fmt(loss)}</span>
+        <span style={{ color: COLORS.textFaint }}> (delivery + return charge + refund)</span>
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <button className="mn-btn" onClick={submit} disabled={saving}>{saving ? "Saving..." : "Confirm return"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// Dedicated Returns tab — every returned order in one place with the
+// reasons, the money lost, and a reason-wise summary so patterns show up.
+function Returns({ orders, notify, role, settings, reload }) {
+  const [returning, setReturning] = useState(null);
+  const returned = orders.filter((o) => o.status === "Returned");
+  const totalLoss = returned.reduce(
+    (t, o) => t + Number(o.returnCharge || 0) + Number(o.refundAmount || 0) + Number(o.deliveryCharge || 0), 0
+  );
+  const returnRate = orders.length ? Math.round((returned.length / orders.length) * 1000) / 10 : 0;
+
+  const byReason = useMemo(() => {
+    const map = {};
+    returned.forEach((o) => {
+      const key = (o.returnReason || "Not specified").split(" — ")[0];
+      map[key] = (map[key] || 0) + 1;
+    });
+    return Object.entries(map).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+  }, [returned]);
+
+  const pending = orders.filter((o) => o.status !== "Returned");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Returned orders" value={returned.length} sub={`${returnRate}% of all orders`} tone={returnRate > 20 ? "negative" : undefined} />
+        <StatCard label="Total return loss" value={fmt(totalLoss)} sub="Delivery + return charge + refunds" tone="negative" />
+        <StatCard label="Top reason" value={byReason[0]?.reason || "—"} sub={byReason[0] ? `${byReason[0].count} orders` : "Koi return nahi"} />
+      </div>
+
+      {returning && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9 }}>
+          <ReturnForm
+            order={returning} settings={settings}
+            onCancel={() => setReturning(null)}
+            onDone={(msg) => { setReturning(null); notify(msg); reload && reload(); }}
+          />
+        </div>
+      )}
+
+      <Panel title="Returned orders" count={`${returned.length} returns`}>
+        {returned.length === 0 ? <EmptyRow text="Abhi tak koi return nahi — achi baat hai." /> : (
+          <table className="mn-table">
+            <thead><tr><th>Order</th><th>Customer</th><th>City</th><th>Product</th><th>Reason</th><th>Refund</th><th>Return charge</th><th>Restocked</th><th>Date</th></tr></thead>
+            <tbody>
+              {returned.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.orderNo}</td>
+                  <td>{o.customer}</td>
+                  <td style={{ color: COLORS.textDim }}>{o.city || "—"}</td>
+                  <td style={{ color: COLORS.textDim }}>{o.product}</td>
+                  <td style={{ fontSize: 12 }}>{o.returnReason || "—"}</td>
+                  <td className="mn-num">{fmt(o.refundAmount)}</td>
+                  <td className="mn-num">{fmt(o.returnCharge)}</td>
+                  <td>{o.restocked ? <Badge text="Yes" tone="positive" /> : <Badge text="No" />}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.returnedAt || o.date}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
+
+      <Panel title="Naya return record karein" count={`${pending.length} active orders`}>
+        {pending.length === 0 ? <EmptyRow text="Koi active order nahi." /> : (
+          <table className="mn-table">
+            <thead><tr><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {pending.slice(0, 25).map((o) => (
+                <tr key={o.id}>
+                  <td>{o.orderNo}</td>
+                  <td>{o.customer}</td>
+                  <td className="mn-num">{fmt(o.sell)}</td>
+                  <td><Badge text={o.status} tone={orderStatusTone[o.status]} /></td>
+                  <td style={{ textAlign: "right" }}>
+                    <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setReturning(o)}>
+                      <Undo2 size={12} /> Mark returned
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
+
+      {byReason.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title="Return reasons" />
+          {byReason.map((r) => (
+            <div key={r.reason} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0" }}>
+              <span>{r.reason}</span>
+              <span className="mn-num" style={{ color: COLORS.accent }}>{r.count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -997,7 +1279,7 @@ function Team({ notify, currentUserId }) {
     { key: "name", label: "Full name", required: true },
     { key: "email", label: "Email", type: "email", required: true },
     { key: "password", label: "Temporary password", required: true },
-    { key: "role", label: "Access level", type: "select", options: ["staff", "owner"], default: "staff" },
+    { key: "role", label: "Access level", type: "select", options: ["staff", "manager", "owner"], default: "staff" },
   ];
 
   const addUser = (v) => {
@@ -1040,7 +1322,7 @@ function Team({ notify, currentUserId }) {
               <tr key={u.id}>
                 <td>{u.name}</td>
                 <td style={{ color: COLORS.textDim }}>{u.email}</td>
-                <td><Badge text={u.role === "owner" ? "Owner" : "Staff"} tone={u.role === "owner" ? "accent" : "info"} /></td>
+                <td><Badge text={u.role === "owner" ? "Owner" : u.role === "manager" ? "Manager" : "Staff"} tone={u.role === "owner" ? "accent" : u.role === "manager" ? "info" : undefined} /></td>
                 <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(u.created_at).slice(0, 10)}</td>
                 <td>{u.id !== currentUserId && <DeleteBtn onClick={() => remove(u)} />}</td>
               </tr>
@@ -1049,7 +1331,7 @@ function Team({ notify, currentUserId }) {
         </table>
       )}
       <div style={{ padding: "12px 18px", fontSize: 11.5, color: COLORS.textFaint, borderTop: `1px solid ${COLORS.borderSoft}` }}>
-        Staff logins see Inventory, Orders, POS, Employees, and Reports — cost, salary, profit, finance, accounts, expenses, affiliates, and delete buttons stay hidden. Owner logins see everything.
+        Staff logins see Inventory, Orders, POS, Employees, Customers, and Reports — salary, finance, accounts, expenses, affiliates, delete buttons, and Team stay hidden. Managers see everything staff sees plus cost, salary, profit, finance, expenses, and affiliates — but can't delete records or manage Accounts/Team. Owner logins see and can do everything.
       </div>
     </Panel>
   );
@@ -1178,6 +1460,57 @@ function Customers({ orders }) {
   );
 }
 
+function AuditLogPanel({ notify }) {
+  const [entries, setEntries] = useState(null);
+  const [resourceFilter, setResourceFilter] = useState("");
+
+  const load = (resource) => {
+    getAuditLog(resource || undefined)
+      .then(setEntries)
+      .catch((err) => notify(`Couldn't load history: ${err.message}`));
+  };
+  useEffect(() => load(resourceFilter), [resourceFilter]);
+
+  return (
+    <Panel
+      title="History" count={entries ? `${entries.length} changes` : "Loading..."}
+      extra={
+        <select className="mn-input" style={{ width: 160 }} value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}>
+          <option value="">All records</option>
+          <option value="inventory">Inventory</option>
+          <option value="orders">Orders</option>
+          <option value="employees">Employees</option>
+          <option value="expenses">Expenses</option>
+          <option value="ad_spend">Ad spend</option>
+          <option value="settings">Cost settings</option>
+        </select>
+      }
+    >
+      {!entries ? (
+        <EmptyRow text="Loading..." />
+      ) : entries.length === 0 ? (
+        <EmptyRow text="Abhi tak koi change record nahi hui." />
+      ) : (
+        <table className="mn-table">
+          <thead><tr><th>When</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Changed by</th></tr></thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(e.changed_at).slice(0, 16).replace("T", " ")}</td>
+                <td>{e.record_label || e.record_id.slice(0, 8)}</td>
+                <td style={{ color: COLORS.textDim }}>{e.field}</td>
+                <td className="mn-num" style={{ color: COLORS.negative }}>{e.old_value || "—"}</td>
+                <td className="mn-num" style={{ color: COLORS.positive }}>{e.new_value || "—"}</td>
+                <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.changed_by}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
+  );
+}
+
 function RowLine({ label, value, bold, negative }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: bold ? 13.5 : 12.5, fontWeight: bold ? 700 : 400, color: negative ? COLORS.negative : COLORS.text, padding: "3px 0" }}>
@@ -1230,6 +1563,7 @@ function POS({ data, update, notify, user }) {
   const [scanCode, setScanCode] = useState("");
   const [customer, setCustomer] = useState("");
   const [phone, setPhone] = useState("");
+  const [city, setCity] = useState("");
   const [discount, setDiscount] = useState(0);
   const [mode, setMode] = useState("Paid");
   const [partialAmount, setPartialAmount] = useState(0);
@@ -1280,7 +1614,10 @@ function POS({ data, update, notify, user }) {
       id: genId(), orderNo, customer: customer || "Walk-in customer", phone, product: productsSummary,
       qty: totalQty, sell: total, cost: costTotal, courier: "In-store", tracking: "", status,
       amountPaid, dueDate: amountPaid < total ? dueDate : "", method, date: todayISO(),
-      billedBy: user?.name || "Unknown",
+      billedBy: user?.name || "Unknown", city,
+      // Counter sale: no courier, so no delivery charge — and tagging the
+      // channel keeps POS separate from website sales in the profit tracker.
+      channel: "Walk-in / POS", deliveryCharge: 0,
     };
     update("orders", (list) => [...list, newOrder]);
     update("inventory", (list) => list.map((inv) => {
@@ -1292,7 +1629,7 @@ function POS({ data, update, notify, user }) {
       update("accounts", (list) => list.map((a) => (a.id === accountId ? { ...a, balance: Number(a.balance || 0) + amountPaid } : a)));
     }
     setReceipt({ ...newOrder, items: cart, discount: Number(discount || 0), subtotal });
-    setCart([]); setCustomer(""); setPhone(""); setDiscount(0); setPartialAmount(0); setDueDate("");
+    setCart([]); setCustomer(""); setPhone(""); setCity(""); setDiscount(0); setPartialAmount(0); setDueDate("");
     notify("Bill generated");
   };
 
@@ -1345,9 +1682,12 @@ function POS({ data, update, notify, user }) {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
           <input className="mn-input" placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
           <input className="mn-input" placeholder="Phone (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <input className="mn-input" placeholder="City (optional)" value={city} onChange={(e) => setCity(e.target.value)} />
         </div>
 
         <RowLine label="Subtotal" value={subtotal} />
@@ -1666,7 +2006,8 @@ function ChartCard({ title, children, height = 260 }) {
   );
 }
 
-function Reports({ data }) {
+function Reports({ data, role }) {
+  const isManagerOrAbove = role === "owner" || role === "manager";
   const byDate = useMemo(() => {
     const map = {};
     data.orders.forEach((o) => {
@@ -1695,6 +2036,37 @@ function Reports({ data }) {
     return Object.entries(map).map(([category, value]) => ({ category, value }));
   }, [data.inventory]);
 
+  // City-wise performance — which cities sell well vs. return a lot,
+  // inspired by COD-market profit trackers like Financify.
+  const cityStats = useMemo(() => {
+    const map = {};
+    data.orders.forEach((o) => {
+      const city = (o.city || "Unknown").trim() || "Unknown";
+      if (!map[city]) map[city] = { city, orders: 0, revenue: 0, returned: 0 };
+      map[city].orders += 1;
+      if (o.status === "Returned") map[city].returned += 1;
+      else map[city].revenue += Number(o.sell || 0);
+    });
+    return Object.values(map)
+      .map((c) => ({ ...c, returnRate: c.orders ? Math.round((c.returned / c.orders) * 100) : 0 }))
+      .sort((a, b) => b.revenue - a.revenue);
+  }, [data.orders]);
+
+  // This month vs last month, for a quick trend check.
+  const monthComparison = useMemo(() => {
+    const now = new Date();
+    const thisMonth = now.toISOString().slice(0, 7);
+    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonth = lastMonthDate.toISOString().slice(0, 7);
+    const sumFor = (m) => {
+      const os = data.orders.filter((o) => (o.date || "").startsWith(m) && o.status !== "Returned");
+      return { revenue: os.reduce((s, o) => s + Number(o.sell || 0), 0), profit: os.reduce((s, o) => s + Number(o.sell || 0) - Number(o.cost || 0), 0), count: os.length };
+    };
+    return { thisMonth: sumFor(thisMonth), lastMonth: sumFor(lastMonth) };
+  }, [data.orders]);
+
+  const pctChange = (curr, prev) => (prev === 0 ? (curr > 0 ? 100 : 0) : Math.round(((curr - prev) / prev) * 100));
+
   const hasOrders = data.orders.length > 0;
   const hasInventory = data.inventory.length > 0;
 
@@ -1719,8 +2091,57 @@ function Reports({ data }) {
       .slice(0, 8);
   }, [data.orders]);
 
+  const downloadMonthlyReport = () => {
+    const month = todayISO().slice(0, 7); // YYYY-MM
+    const monthOrders = data.orders.filter((o) => (o.date || "").startsWith(month));
+    const activeOrders = monthOrders.filter((o) => o.status !== "Returned");
+    const revenue = activeOrders.reduce((s, o) => s + Number(o.sell || 0), 0);
+    const cogs = activeOrders.reduce((s, o) => s + Number(o.cost || 0), 0);
+    const returned = monthOrders.filter((o) => o.status === "Returned").length;
+    const stockInvestment = data.inventory.reduce((s, i) => s + Number(i.cost || 0) * Number(i.quantity || 0), 0);
+
+    const lines = [];
+    lines.push(`Munshi — Monthly Analysis — ${month}`);
+    lines.push("");
+    lines.push("Summary,Amount");
+    lines.push(`Revenue,${revenue}`);
+    lines.push(`Cost of goods sold,${cogs}`);
+    lines.push(`Gross profit,${revenue - cogs}`);
+    lines.push(`Orders this month,${monthOrders.length}`);
+    lines.push(`Returned orders,${returned}`);
+    lines.push(`Current stock investment (all-time),${stockInvestment}`);
+    lines.push("");
+    lines.push("Best-selling products,Units sold");
+    bestSellers.forEach((p) => lines.push(`${p.name.replace(/,/g, " ")},${p.qty}`));
+    lines.push("");
+    lines.push("Low stock items,Quantity,Reorder level");
+    data.inventory.filter((i) => Number(i.quantity) <= Number(i.reorder)).forEach((i) => {
+      lines.push(`${i.name.replace(/,/g, " ")},${i.quantity},${i.reorder}`);
+    });
+    lines.push("");
+    lines.push("Order No,Date,Customer,Product,Amount,Status");
+    monthOrders.forEach((o) => {
+      lines.push(`${o.orderNo},${o.date},${(o.customer || "").replace(/,/g, " ")},${(o.product || "").replace(/,/g, " ")},${o.sell},${o.status}`);
+    });
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `munshi-report-${month}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {isManagerOrAbove && (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button className="mn-btn-ghost" onClick={downloadMonthlyReport} style={{ fontSize: 12 }}>
+            Download this month's analysis (CSV)
+          </button>
+        </div>
+      )}
       <ChartCard title="Revenue & profit trend">
         {!hasOrders ? <EmptyRow text="Chart k liye orders add karein." /> : (
           <ResponsiveContainer width="100%" height="100%">
@@ -1781,6 +2202,540 @@ function Reports({ data }) {
             ))}
           </div>
         )}
+      </div>
+
+      {isManagerOrAbove && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title="This month vs last month" />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px,1fr))", gap: 12, marginTop: 6 }}>
+            <StatCard label="Revenue" value={fmt(monthComparison.thisMonth.revenue)} sub={`${pctChange(monthComparison.thisMonth.revenue, monthComparison.lastMonth.revenue) >= 0 ? "+" : ""}${pctChange(monthComparison.thisMonth.revenue, monthComparison.lastMonth.revenue)}% vs last month`} tone={monthComparison.thisMonth.revenue >= monthComparison.lastMonth.revenue ? "positive" : "negative"} />
+            <StatCard label="Profit" value={fmt(monthComparison.thisMonth.profit)} sub={`${pctChange(monthComparison.thisMonth.profit, monthComparison.lastMonth.profit) >= 0 ? "+" : ""}${pctChange(monthComparison.thisMonth.profit, monthComparison.lastMonth.profit)}% vs last month`} tone={monthComparison.thisMonth.profit >= monthComparison.lastMonth.profit ? "positive" : "negative"} />
+            <StatCard label="Orders" value={monthComparison.thisMonth.count} sub={`Last month: ${monthComparison.lastMonth.count}`} />
+          </div>
+        </div>
+      )}
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <SectionHeading title="City-wise performance" />
+        {cityStats.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
+          <table className="mn-table">
+            <thead><tr><th>City</th><th>Orders</th><th>Revenue</th><th>Return rate</th></tr></thead>
+            <tbody>
+              {cityStats.map((c) => (
+                <tr key={c.city}>
+                  <td>{c.city}</td>
+                  <td className="mn-num">{c.orders}</td>
+                  <td className="mn-num">{fmt(c.revenue)}</td>
+                  <td className="mn-num" style={{ color: c.returnRate > 20 ? COLORS.negative : COLORS.textDim }}>{c.returnRate}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Profit tracker — Financify-style true-profit view.
+//
+// The point of this screen: revenue is not profit. In a COD business the
+// courier fee, the return fee, the refund, the packing and the ad spend
+// all come out of the same sale, and the only number that matters is what
+// is left at the bottom. Everything here is computed by /analytics so the
+// month-end sheet and this screen can never disagree.
+// =====================================================================
+
+const RANGE_PRESETS = [
+  { id: "thisMonth", label: "This month" },
+  { id: "lastMonth", label: "Last month" },
+  { id: "last30", label: "Last 30 days" },
+  { id: "last7", label: "Last 7 days" },
+];
+
+function rangeFor(preset) {
+  const now = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  if (preset === "lastMonth") {
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const end = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { from: iso(start), to: iso(end) };
+  }
+  if (preset === "last30") return { from: iso(new Date(now.getTime() - 29 * 864e5)), to: iso(now) };
+  if (preset === "last7") return { from: iso(new Date(now.getTime() - 6 * 864e5)), to: iso(now) };
+  return { from: iso(new Date(now.getFullYear(), now.getMonth(), 1)), to: iso(now) };
+}
+
+function ProfitTracker({ notify }) {
+  const [preset, setPreset] = useState("thisMonth");
+  const [range, setRange] = useState(() => rangeFor("thisMonth"));
+  const [a, setA] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { setRange(rangeFor(preset)); }, [preset]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    getAnalytics(range.from, range.to)
+      .then((res) => { if (alive) setA(res); })
+      .catch((err) => notify(`Analytics failed: ${err.message}`))
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [range.from, range.to]);
+
+  if (loading && !a) return <EmptyRow text="Profit data load ho raha hai..." />;
+  if (!a) return <EmptyRow text="Data load nahi hua." />;
+
+  const s = a.summary;
+  const tone = s.netProfit >= 0 ? "positive" : "negative";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {RANGE_PRESETS.map((r) => (
+          <button
+            key={r.id}
+            className={preset === r.id ? "mn-btn" : "mn-btn-ghost"}
+            style={{ fontSize: 12 }}
+            onClick={() => setPreset(r.id)}
+          >{r.label}</button>
+        ))}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+          <input className="mn-input" style={{ width: 140 }} type="date" value={range.from} onChange={(e) => setRange((x) => ({ ...x, from: e.target.value }))} />
+          <span style={{ color: COLORS.textFaint, fontSize: 12 }}>to</span>
+          <input className="mn-input" style={{ width: 140 }} type="date" value={range.to} onChange={(e) => setRange((x) => ({ ...x, to: e.target.value }))} />
+        </span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Revenue" value={fmt(s.revenue)} sub={`${s.orders} orders · AOV ${fmt(s.aov)}`} />
+        <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />
+        <StatCard label="COD costs" value={fmt(s.codCosts)} sub="Delivery + return + refunds + packing" tone="negative" />
+        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={a.roas.cac ? `CAC ${fmt(a.roas.cac)} per delivered order` : "Ad spend add karein"} tone="negative" />
+        <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={tone} />
+        <StatCard label="Return rate" value={`${s.returnRate}%`} sub={`${s.returnedOrders} of ${s.orders} orders`} tone={s.returnRate > 20 ? "negative" : undefined} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title="Profit breakdown — paisa kahan gaya" />
+          <RowLine label="Revenue (non-returned sales)" value={s.revenue} bold />
+          <RowLine label="− Cost of goods" value={-s.cogs} negative />
+          <RowLine label="= Gross profit" value={s.grossProfit} bold />
+          <div style={{ height: 8 }} />
+          <RowLine label="− Delivery charges" value={-s.deliveryCharges} negative />
+          <RowLine label="− Return charges" value={-s.returnCharges} negative />
+          <RowLine label="− Refunds given" value={-s.refunds} negative />
+          <RowLine label="− Packaging" value={-s.packaging} negative />
+          <RowLine label="− Cash handling" value={-s.cashHandling} negative />
+          <RowLine label="− Ad spend" value={-s.adSpend} negative />
+          <RowLine label="= Contribution profit" value={s.contributionProfit} bold />
+          <div style={{ height: 8 }} />
+          <RowLine label="− Salaries (paid)" value={-s.salaries} negative />
+          <RowLine label="− Affiliate commissions" value={-s.commissions} negative />
+          <RowLine label="− Other expenses" value={-s.otherExpenses} negative />
+          {s.tax > 0 && <RowLine label="− Tax" value={-s.tax} negative />}
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: 8, paddingTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, color: s.netProfit >= 0 ? COLORS.positive : COLORS.negative }}>
+              <span>Net profit</span><span className="mn-num">{fmt(s.netProfit)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+            <SectionHeading title="ROAS — asli tasveer" />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <StatCard label="Purchase ROAS" value={a.roas.purchase != null ? `${a.roas.purchase}x` : "—"} sub="Har order count hota hai" />
+              <StatCard
+                label="Post-delivery ROAS" value={a.roas.postDelivery != null ? `${a.roas.postDelivery}x` : "—"}
+                sub="Sirf delivered orders"
+                tone={a.roas.postDelivery != null && a.roas.postDelivery < 1.5 ? "negative" : "positive"}
+              />
+            </div>
+            <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+              COD mein purchase ROAS hamesha bara lagta hai. Faisla post-delivery ROAS par karein — cash jo waqai aya.
+              Cash collected: <span className="mn-num" style={{ color: COLORS.text }}>{fmt(a.roas.cashCollected)}</span>
+            </div>
+          </div>
+
+          <ChartCard title="Daily revenue vs ad spend vs profit" height={220}>
+            {a.daily.length === 0 ? <EmptyRow text="Is period mein koi data nahi." /> : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={a.daily}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.borderSoft} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
+                  <YAxis tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={{ stroke: COLORS.border }} tickLine={false} tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                  <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12 }} formatter={(v) => fmt(v)} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="revenue" name="Revenue" stroke={COLORS.info} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="adSpend" name="Ad spend" stroke={COLORS.accent} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="profit" name="Profit" stroke={COLORS.positive} strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </ChartCard>
+        </div>
+      </div>
+
+      <BreakdownTable title="City-wise performance" rows={a.byCity} keyLabel="City" hint="Jahan return rate zyada hai, wahan COD band karke advance lein." />
+      <BreakdownTable title="Courier-wise performance" rows={a.byCourier} keyLabel="Courier" hint="Jo courier zyada return karwata hai, uska hissa kam karein." />
+      <BreakdownTable title="Channel-wise performance" rows={a.byChannel} keyLabel="Channel" />
+      <BreakdownTable title="Staff-wise sales (billed by)" rows={a.byStaff} keyLabel="Billed by" hint="Har bill par billing karne wale ka naam save hota hai." />
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <SectionHeading title="Product-wise profit" />
+        {a.byProduct.length === 0 ? <EmptyRow text="Abhi tak koi product bika nahi." /> : (
+          <table className="mn-table">
+            <thead><tr><th>Product</th><th>Units</th><th>Returned</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th></tr></thead>
+            <tbody>
+              {a.byProduct.map((pr) => (
+                <tr key={pr.name}>
+                  <td>{pr.name}</td>
+                  <td className="mn-num">{pr.units}</td>
+                  <td className="mn-num" style={{ color: pr.returnedUnits > 0 ? COLORS.negative : COLORS.textFaint }}>{pr.returnedUnits || "—"}</td>
+                  <td className="mn-num">{fmt(pr.revenue)}</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{fmt(pr.cost)}</td>
+                  <td className="mn-num" style={{ color: pr.profit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(pr.profit)}</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{pr.margin}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BreakdownTable({ title, rows, keyLabel, hint }) {
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title={title} />
+      {(!rows || rows.length === 0) ? <EmptyRow text="Is period mein koi data nahi." /> : (
+        <>
+          <table className="mn-table">
+            <thead><tr><th>{keyLabel}</th><th>Orders</th><th>Delivered</th><th>Returned</th><th>Return rate</th><th>Revenue</th><th>Profit</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.key}>
+                  <td>{r.key}</td>
+                  <td className="mn-num">{r.orders}</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{r.delivered}</td>
+                  <td className="mn-num" style={{ color: r.returned ? COLORS.negative : COLORS.textFaint }}>{r.returned}</td>
+                  <td className="mn-num" style={{ color: r.returnRate > 20 ? COLORS.negative : COLORS.textDim }}>{r.returnRate}%</td>
+                  <td className="mn-num">{fmt(r.revenue)}</td>
+                  <td className="mn-num" style={{ color: r.profit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(r.profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {hint && <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>{hint}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Monthly analysis sheet — "mahine ke baad khud hi ban jaye".
+//
+// The backend freezes a full sheet for every month (a Railway cron hits
+// /reports/month-end/cron on the 1st). This screen lists those frozen
+// months, can generate any month on demand, and exports to CSV / print.
+// =====================================================================
+function MonthlySheet({ notify }) {
+  const [month, setMonth] = useState(todayISO().slice(0, 7));
+  const [sheet, setSheet] = useState(null);
+  const [saved, setSaved] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = (m) => {
+    setLoading(true);
+    getMonthlySheet(m)
+      .then(setSheet)
+      .catch((err) => notify(`Sheet failed: ${err.message}`))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(month); }, [month]);
+  useEffect(() => { getSavedSheets().then(setSaved).catch(() => {}); }, [sheet]);
+
+  const downloadCsv = () => {
+    if (!sheet) return;
+    const s = sheet.summary;
+    const L = [];
+    const push = (...cells) => L.push(cells.map((c) => String(c ?? "").replace(/,/g, " ")).join(","));
+
+    push(`Munshi — Monthly Analysis — ${sheet.month}`);
+    push("");
+    push("PROFIT & LOSS", "Amount (Rs)");
+    push("Revenue", s.revenue);
+    push("Cost of goods sold", s.cogs);
+    push("Gross profit", s.grossProfit);
+    push("Delivery charges", s.deliveryCharges);
+    push("Return charges", s.returnCharges);
+    push("Refunds", s.refunds);
+    push("Packaging", s.packaging);
+    push("Cash handling", s.cashHandling);
+    push("Ad spend", s.adSpend);
+    push("Contribution profit", s.contributionProfit);
+    push("Salaries", s.salaries);
+    push("Affiliate commissions", s.commissions);
+    push("Other expenses", s.otherExpenses);
+    push("Tax", s.tax);
+    push("NET PROFIT", s.netProfit);
+    push("Net margin %", s.margin);
+    push("");
+    push("ORDERS", "Count");
+    push("Total orders", s.orders);
+    push("Delivered", s.deliveredOrders);
+    push("Returned", s.returnedOrders);
+    push("Return rate %", s.returnRate);
+    push("Average order value", s.aov);
+    push("");
+    push("ROAS", "Value");
+    push("Purchase ROAS", sheet.roas.purchase ?? "—");
+    push("Post-delivery ROAS", sheet.roas.postDelivery ?? "—");
+    push("CAC per delivered order", sheet.roas.cac ?? "—");
+    push("Cash collected", sheet.roas.cashCollected);
+    push("");
+    push("CITY", "Orders", "Delivered", "Returned", "Return rate %", "Revenue", "Profit");
+    sheet.byCity.forEach((c) => push(c.key, c.orders, c.delivered, c.returned, c.returnRate, c.revenue, c.profit));
+    push("");
+    push("COURIER", "Orders", "Delivered", "Returned", "Return rate %", "Revenue", "Profit");
+    sheet.byCourier.forEach((c) => push(c.key, c.orders, c.delivered, c.returned, c.returnRate, c.revenue, c.profit));
+    push("");
+    push("BILLED BY", "Orders", "Revenue", "Profit");
+    sheet.byStaff.forEach((c) => push(c.key, c.orders, c.revenue, c.profit));
+    push("");
+    push("PRODUCT", "Units", "Returned units", "Revenue", "Cost", "Profit", "Margin %");
+    sheet.byProduct.forEach((pr) => push(pr.name, pr.units, pr.returnedUnits, pr.revenue, pr.cost, pr.profit, pr.margin));
+    push("");
+    push("RETURN REASON", "Count");
+    (sheet.returnReasons || []).forEach((r) => push(r.reason, r.count));
+    push("");
+    push("LOW STOCK ITEM", "SKU", "Quantity", "Reorder level");
+    (sheet.stock?.lowStock || []).forEach((i) => push(i.name, i.sku, i.quantity, i.reorder));
+    push("");
+    push("Stock invested (at cost)", sheet.stock?.invested ?? 0);
+    push("Stock retail value", sheet.stock?.retailValue ?? 0);
+
+    const blob = new Blob([L.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `munshi-analysis-${sheet.month}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (loading && !sheet) return <EmptyRow text="Sheet ban rahi hai..." />;
+  if (!sheet) return <EmptyRow text="Sheet load nahi hui." />;
+
+  const s = sheet.summary;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="mn-input" style={{ width: 160 }} type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+        {saved.length > 0 && (
+          <select className="mn-input" style={{ width: 200 }} value="" onChange={(e) => e.target.value && setMonth(e.target.value)}>
+            <option value="">Saved month-end sheets…</option>
+            {saved.map((x) => <option key={x.month} value={x.month}>{x.month}</option>)}
+          </select>
+        )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button className="mn-btn-ghost" onClick={() => window.print()}><Printer size={13} /> Print</button>
+          <button className="mn-btn" onClick={downloadCsv}><FileText size={13} /> Download CSV</button>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint }}>
+        Har mahine ki 1 tareekh ko pichle mahine ki sheet khud save ho jati hai. Yahan koi bhi mahina dobara bana kar dekh sakte hain.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Revenue" value={fmt(s.revenue)} sub={`${s.orders} orders`} />
+        <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />
+        <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={s.netProfit >= 0 ? "positive" : "negative"} />
+        <StatCard label="Returns" value={`${s.returnedOrders}`} sub={`${s.returnRate}% · loss ${fmt(s.returnCharges + s.refunds)}`} tone={s.returnRate > 20 ? "negative" : undefined} />
+        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={sheet.roas.postDelivery != null ? `${sheet.roas.postDelivery}x post-delivery ROAS` : "No ad spend logged"} />
+        <StatCard label="Stock invested" value={fmt(sheet.stock?.invested || 0)} sub={`Retail ${fmt(sheet.stock?.retailValue || 0)}`} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title={`Profit & loss — ${sheet.month}`} />
+          <RowLine label="Revenue" value={s.revenue} bold />
+          <RowLine label="− Cost of goods" value={-s.cogs} negative />
+          <RowLine label="= Gross profit" value={s.grossProfit} bold />
+          <RowLine label="− Delivery + return + refunds" value={-(s.deliveryCharges + s.returnCharges + s.refunds)} negative />
+          <RowLine label="− Packaging + cash handling" value={-(s.packaging + s.cashHandling)} negative />
+          <RowLine label="− Ad spend" value={-s.adSpend} negative />
+          <RowLine label="− Salaries + commissions + expenses" value={-(s.salaries + s.commissions + s.otherExpenses)} negative />
+          {s.tax > 0 && <RowLine label="− Tax" value={-s.tax} negative />}
+          <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: 8, paddingTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, color: s.netProfit >= 0 ? COLORS.positive : COLORS.negative }}>
+              <span>Net profit</span><span className="mn-num">{fmt(s.netProfit)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title="Return reasons" />
+          {(!sheet.returnReasons || sheet.returnReasons.length === 0) ? <EmptyRow text="Is mahine koi return nahi." /> : (
+            sheet.returnReasons.map((r) => (
+              <div key={r.reason} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0" }}>
+                <span>{r.reason}</span><span className="mn-num" style={{ color: COLORS.accent }}>{r.count}</span>
+              </div>
+            ))
+          )}
+          <div style={{ marginTop: 14 }}>
+            <SectionHeading title="Low stock" />
+            {(!sheet.stock?.lowStock || sheet.stock.lowStock.length === 0) ? <EmptyRow text="Sab stock theek hai." /> : (
+              sheet.stock.lowStock.slice(0, 8).map((i) => (
+                <div key={i.sku || i.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0" }}>
+                  <span>{i.name}</span>
+                  <span className="mn-num" style={{ color: COLORS.negative }}>{i.quantity} / {i.reorder}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      <BreakdownTable title="City-wise" rows={sheet.byCity} keyLabel="City" />
+      <BreakdownTable title="Courier-wise" rows={sheet.byCourier} keyLabel="Courier" />
+      <BreakdownTable title="Staff-wise (billed by)" rows={sheet.byStaff} keyLabel="Billed by" />
+    </div>
+  );
+}
+
+// =====================================================================
+// Ad spend — manual replacement for Financify's Meta/Google auto-sync.
+// One row per channel per day is enough to make ROAS and CAC real.
+// =====================================================================
+function AdSpend({ rows, update, notify, role }) {
+  const [adding, setAdding] = useState(false);
+  const isOwner = role === "owner";
+
+  const fields = [
+    { key: "date", label: "Date", type: "date", default: todayISO() },
+    { key: "channel", label: "Channel", type: "select", options: ["Facebook", "Instagram", "Google", "TikTok", "WhatsApp", "Influencer", "Other"] },
+    { key: "campaign", label: "Campaign (optional)" },
+    { key: "amount", label: "Amount spent (Rs)", type: "number", default: 0 },
+    { key: "notes", label: "Notes (optional)" },
+  ];
+
+  const total = rows.reduce((t, r) => t + Number(r.amount || 0), 0);
+  const thisMonth = rows
+    .filter((r) => String(r.date || "").slice(0, 7) === todayISO().slice(0, 7))
+    .reduce((t, r) => t + Number(r.amount || 0), 0);
+
+  const byChannel = useMemo(() => {
+    const map = {};
+    rows.forEach((r) => { map[r.channel || "Other"] = (map[r.channel || "Other"] || 0) + Number(r.amount || 0); });
+    return Object.entries(map).map(([channel, amount]) => ({ channel, amount })).sort((a, b) => b.amount - a.amount);
+  }, [rows]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="This month's ad spend" value={fmt(thisMonth)} sub="Profit tracker mein use hota hai" />
+        <StatCard label="All-time ad spend" value={fmt(total)} sub={`${rows.length} entries`} />
+        <StatCard label="Top channel" value={byChannel[0]?.channel || "—"} sub={byChannel[0] ? fmt(byChannel[0].amount) : "Abhi kuch add nahi hua"} />
+      </div>
+
+      <Panel title="Ad spend" addLabel="Add spend" onAdd={() => setAdding(true)} count={`${rows.length} entries`}>
+        {adding && (
+          <AddForm
+            title="New ad spend" fields={fields} onCancel={() => setAdding(false)}
+            onSave={(v) => {
+              update((list) => [...list, { id: genId(), ...v, amount: Number(v.amount || 0) }]);
+              setAdding(false);
+              notify("Ad spend added");
+            }}
+          />
+        )}
+        {rows.length === 0 ? <EmptyRow text="Ad spend add karein taake asli ROAS pata chale." /> : (
+          <table className="mn-table">
+            <thead><tr><th>Date</th><th>Channel</th><th>Campaign</th><th>Amount</th><th>Notes</th>{isOwner && <th></th>}</tr></thead>
+            <tbody>
+              {[...rows].sort((a, b) => String(b.date).localeCompare(String(a.date))).map((r) => (
+                <tr key={r.id}>
+                  <td style={{ color: COLORS.textDim }}>{String(r.date || "").slice(0, 10)}</td>
+                  <td><Badge text={r.channel || "Other"} tone="info" /></td>
+                  <td style={{ color: COLORS.textDim }}>{r.campaign || "—"}</td>
+                  <td className="mn-num">{fmt(r.amount)}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{r.notes || "—"}</td>
+                  {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== r.id))} /></td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// =====================================================================
+// Cost settings — the defaults that make profit maths correct without
+// typing the same numbers on every order. Owner only; every change is
+// written to the change history.
+// =====================================================================
+function CostSettings({ settings, onSaved, notify }) {
+  const [form, setForm] = useState(settings);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setForm(settings); }, [settings]);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await saveSettings({
+        default_delivery_charge: Number(form.default_delivery_charge) || 0,
+        default_return_charge: Number(form.default_return_charge) || 0,
+        cash_handling_pct: Number(form.cash_handling_pct) || 0,
+        tax_pct: Number(form.tax_pct) || 0,
+        packaging_cost: Number(form.packaging_cost) || 0,
+      });
+      onSaved(res);
+      notify("Settings saved");
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const rows = [
+    { key: "default_delivery_charge", label: "Default delivery charge (Rs)", hint: "Courier har parcel par jo leta hai. Naye order mein khud bhar jayega." },
+    { key: "default_return_charge", label: "Default return charge (Rs)", hint: "Return aane par courier ka charge." },
+    { key: "packaging_cost", label: "Packaging cost per order (Rs)", hint: "Box, tape, flyer — har order par." },
+    { key: "cash_handling_pct", label: "COD cash handling (%)", hint: "Courier COD collection par jo % kaat'ta hai." },
+    { key: "tax_pct", label: "Tax on revenue (%)", hint: "0 rakhein agar apply nahi hota." },
+  ];
+
+  return (
+    <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <SectionHeading title="Cost settings" />
+        <div style={{ fontSize: 12, color: COLORS.textFaint, marginBottom: 16 }}>
+          Ye numbers Profit tracker aur monthly sheet mein asli munafa nikalne ke liye use hote hain.
+        </div>
+        {rows.map((r) => (
+          <div key={r.key} style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, color: COLORS.textDim, display: "block", marginBottom: 4 }}>{r.label}</label>
+            <input className="mn-input" type="number" value={form[r.key] ?? 0} onChange={(e) => set(r.key, e.target.value)} />
+            <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 4 }}>{r.hint}</div>
+          </div>
+        ))}
+        <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save settings"}</button>
       </div>
     </div>
   );

@@ -69,7 +69,13 @@ export async function removeUser(id) {
 // --- Field name mapping between the UI's camelCase and the DB's snake_case ---
 // Only fields that actually differ need an entry; everything else passes through.
 const FIELD_MAPS = {
-  orders: { orderNo: "order_no", amountPaid: "amount_paid", dueDate: "due_date", billedBy: "billed_by", returnReason: "return_reason" },
+  orders: {
+    orderNo: "order_no", amountPaid: "amount_paid", dueDate: "due_date",
+    billedBy: "billed_by", returnReason: "return_reason",
+    deliveryCharge: "delivery_charge", returnCharge: "return_charge",
+    refundAmount: "refund_amount", returnedAt: "returned_at", deliveredAt: "delivered_at",
+  },
+  "ad-spend": {},
   employees: { paidFrom: "account_id" },
   affiliates: { paidFrom: "account_id" },
   expenses: { accountId: "account_id" },
@@ -81,7 +87,8 @@ const FIELD_MAPS = {
 // coerced to numbers so the UI's arithmetic and formatting work as before.
 const NUMERIC_FIELDS = {
   inventory: ["quantity", "reorder", "cost", "price"],
-  orders: ["qty", "sell", "cost", "amountPaid"],
+  orders: ["qty", "sell", "cost", "amountPaid", "deliveryCharge", "returnCharge", "refundAmount"],
+  "ad-spend": ["amount"],
   employees: ["salary"],
   affiliates: ["rate", "sales", "commission"],
   accounts: ["balance"],
@@ -140,4 +147,44 @@ export async function syncWooCommerce(days) {
 }
 export async function sendLowStockAlert() {
   return request("/alerts/low-stock", { method: "POST" });
+}
+export async function getAuditLog(resource) {
+  return request(`/audit-log${resource ? `?resource=${encodeURIComponent(resource)}` : ""}`);
+}
+
+// --- Returns ---
+// One call marks the order Returned, records the courier's return charge
+// and any refund, and (optionally) puts the stock back into inventory.
+export async function returnOrder(id, { reason, refundAmount = 0, returnCharge, restock = true }) {
+  return request(`/orders/${id}/return`, {
+    method: "POST",
+    body: { reason, refundAmount, returnCharge, restock },
+  });
+}
+
+// --- COD / cost settings (everyone reads, owner writes) ---
+export async function getSettings() {
+  return request("/settings");
+}
+export async function saveSettings(patch) {
+  return request("/settings", { method: "PUT", body: patch });
+}
+
+// --- Profit analytics (manager + owner) ---
+export async function getAnalytics(from, to) {
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  return request(`/analytics${qs.toString() ? `?${qs}` : ""}`);
+}
+
+// --- Month-end analysis sheet ---
+export async function getMonthlySheet(month) {
+  return request(`/reports/sheet${month ? `?month=${month}` : ""}`);
+}
+export async function getSavedSheets() {
+  return request("/reports/saved");
+}
+export async function getSavedSheet(month) {
+  return request(`/reports/saved/${month}`);
 }
