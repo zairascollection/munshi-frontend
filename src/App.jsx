@@ -863,7 +863,10 @@ function Inventory({ items, update, notify, role }) {
               const variantLabel = [i.size, i.color].filter(Boolean).join(" · ");
               return (
                 <tr key={i.id}>
-                  <td>{g.isGroup ? null : <Thumb url={i.image} size={52} />}</td>
+                  {/* Variants get a slightly smaller thumb so the group
+                      stays visually indented, but every row shows its
+                      own picture — that's the whole point of having one. */}
+                  <td><Thumb url={i.image} size={g.isGroup ? 42 : 52} /></td>
                   <td style={g.isGroup ? { paddingLeft: 26 } : undefined}>
                     {g.isGroup ? (variantLabel || i.name) : i.name}
                     {!g.isGroup && variantLabel && <span style={{ color: COLORS.textFaint, fontSize: 11.5, marginLeft: 6 }}>{variantLabel}</span>}
