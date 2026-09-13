@@ -1,0 +1,17 @@
+{
+  "name": "Munshi — Zaira's Collection",
+  "short_name": "Munshi",
+  "description": "Business manager: POS, inventory, orders, returns and profit tracking",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0F161F",
+  "theme_color": "#0F161F",
+  "lang": "en",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

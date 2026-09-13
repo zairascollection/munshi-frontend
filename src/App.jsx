@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, Fragment } from "react";
+import { useState, useEffect, useMemo, useCallback, Fragment, lazy, Suspense } from "react";
 import {
   LayoutGrid, Boxes, Truck, Users, Wallet, Share2, Plus, Trash2,
   TrendingUp, TrendingDown, AlertTriangle, Search, X, ChevronRight,
@@ -7,11 +7,24 @@ import {
   Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
   MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check, Bell,
 } from "lucide-react";
-import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
-  CartesianGrid, Tooltip, ResponsiveContainer, Legend,
-} from "recharts";
 import Login from "./Login";
+import { COLORS, CHART_COLORS, fmt } from "./theme";
+
+// recharts is loaded on demand — only the two screens that draw charts pay
+// for it, and the rest of the app starts without waiting on 150 KB.
+const RevenueProfitTrend = lazy(() => import("./Charts").then((m) => ({ default: m.RevenueProfitTrend })));
+const OrdersByStatus = lazy(() => import("./Charts").then((m) => ({ default: m.OrdersByStatus })));
+const StockByCategory = lazy(() => import("./Charts").then((m) => ({ default: m.StockByCategory })));
+const DailyProfitTrend = lazy(() => import("./Charts").then((m) => ({ default: m.DailyProfitTrend })));
+
+// Shown for the fraction of a second while the chart bundle arrives.
+function ChartFallback() {
+  return (
+    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.textFaint, fontSize: 12.5 }}>
+      Chart load ho raha hai...
+    </div>
+  );
+}
 import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
   changePassword, sendLowStockAlert, getAuditLog,
@@ -22,27 +35,7 @@ import {
   pushStockToWebsite,
 } from "./api";
 
-const COLORS = {
-  bg: "#0F161F",
-  surface: "#161F2A",
-  surface2: "#1D2A38",
-  border: "#26374A",
-  borderSoft: "#1E2C3A",
-  text: "#E9F0F6",
-  textDim: "#8CA0B3",
-  textFaint: "#5A7186",
-  accent: "#E8A33D",
-  accentDim: "#3A2F1C",
-  positive: "#3FB68A",
-  positiveDim: "#173A30",
-  negative: "#E2574C",
-  negativeDim: "#3A1E1C",
-  info: "#5B9BD5",
-  infoDim: "#1B2C3D",
-};
 
-const fmt = (n) =>
-  "Rs " + Math.round(Number(n) || 0).toLocaleString("en-PK");
 
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -90,7 +83,6 @@ const NAV_SECTIONS = [
   { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
 ];
 
-const CHART_COLORS = ["#E8A33D", "#5B9BD5", "#3FB68A", "#E2574C", "#9B7EDE", "#4FC3C7"];
 
 const accountName = (accounts, id) => ((accounts || []).find((a) => a.id === id) || {}).name || "—";
 
@@ -149,16 +141,29 @@ export default function App() {
     })();
   }, []);
 
+  // Inventory and orders drive the dashboard, POS and the first few tabs.
+  // Everything else can arrive a moment later without anyone noticing.
+  const PRIMARY_KEYS = ["inventory", "orders"];
+
   const loadAll = useCallback(async (role) => {
-    setReady(false);
     const keys = ALL_KEYS.filter((k) => role === "owner" || (role === "manager" && !OWNER_ONLY_KEYS.has(k)) || (!OWNER_ONLY_KEYS.has(k) && !MANAGER_OK_KEYS.has(k)));
-    const results = await Promise.all(keys.map((k) => api.list(k).catch(() => [])));
-    setData((d) => {
+    const primary = keys.filter((k) => PRIMARY_KEYS.includes(k));
+    const rest = keys.filter((k) => !PRIMARY_KEYS.includes(k));
+
+    const apply = (ks, results) => setData((d) => {
       const next = { ...d };
-      keys.forEach((k, i) => { next[k] = results[i]; });
+      ks.forEach((k, i) => { next[k] = results[i]; });
       return next;
     });
+
+    // Fire every request at once — the second group isn't waiting on the
+    // first, we just stop blocking the screen once the first group lands.
+    const restPromise = Promise.all(rest.map((k) => api.list(k).catch(() => [])));
+    const primaryResults = await Promise.all(primary.map((k) => api.list(k).catch(() => [])));
+    apply(primary, primaryResults);
     setReady(true);
+
+    apply(rest, await restPromise);
   }, []);
 
   useEffect(() => {
@@ -685,14 +690,14 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
     const reader = new FileReader();
     reader.onload = (e) => {
       img.onload = () => {
-        const maxDim = 600;
+        const maxDim = 420;
         const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
         const canvas = document.createElement("canvas");
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        set(key, canvas.toDataURL("image/jpeg", 0.75));
+        set(key, canvas.toDataURL("image/jpeg", 0.72));
       };
       img.src = e.target.result;
     };
@@ -2397,47 +2402,20 @@ function Reports({ data, role }) {
       )}
       <ChartCard title="Revenue & profit trend">
         {!hasOrders ? <EmptyRow text="Chart k liye orders add karein." /> : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={byDate}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.borderSoft} />
-              <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
-              <YAxis tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : v)} />
-              <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12 }} labelStyle={{ color: COLORS.text }} formatter={(v) => fmt(v)} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey="revenue" name="Revenue" stroke={COLORS.info} strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="profit" name="Profit" stroke={COLORS.positive} strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          <Suspense fallback={<ChartFallback />}><RevenueProfitTrend data={byDate} /></Suspense>
         )}
       </ChartCard>
 
       <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ChartCard title="Orders by status" height={240}>
           {!hasOrders ? <EmptyRow text="Koi order nahi." /> : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={statusCounts}>
-                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.borderSoft} />
-                <XAxis dataKey="status" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
-                <YAxis allowDecimals={false} tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
-                <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12 }} />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  {statusCounts.map((s, idx) => <Cell key={s.status} fill={CHART_COLORS[idx % CHART_COLORS.length]} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <Suspense fallback={<ChartFallback />}><OrdersByStatus data={statusCounts} /></Suspense>
           )}
         </ChartCard>
 
         <ChartCard title="Stock value by category" height={240}>
           {!hasInventory ? <EmptyRow text="Koi inventory nahi." /> : (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={stockByCategory} dataKey="value" nameKey="category" cx="50%" cy="50%" outerRadius={80} label={(e) => e.category}>
-                  {stockByCategory.map((_, idx) => <Cell key={idx} fill={CHART_COLORS[idx % CHART_COLORS.length]} />)}
-                </Pie>
-                <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12 }} formatter={(v) => fmt(v)} />
-              </PieChart>
-            </ResponsiveContainer>
+            <Suspense fallback={<ChartFallback />}><StockByCategory data={stockByCategory} /></Suspense>
           )}
         </ChartCard>
       </div>
@@ -2616,18 +2594,7 @@ function ProfitTracker({ notify }) {
 
           <ChartCard title="Daily revenue vs ad spend vs profit" height={220}>
             {a.daily.length === 0 ? <EmptyRow text="Is period mein koi data nahi." /> : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={a.daily}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.borderSoft} />
-                  <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
-                  <YAxis tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={{ stroke: COLORS.border }} tickLine={false} tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
-                  <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12 }} formatter={(v) => fmt(v)} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="revenue" name="Revenue" stroke={COLORS.info} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="adSpend" name="Ad spend" stroke={COLORS.accent} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="profit" name="Profit" stroke={COLORS.positive} strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              <Suspense fallback={<ChartFallback />}><DailyProfitTrend data={a.daily} /></Suspense>
             )}
           </ChartCard>
         </div>
