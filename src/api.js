@@ -5,6 +5,9 @@
 // `BASE_URL` line below for however your tooling exposes env vars.
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
+// Exported so <img> tags can turn a relative image_url into a full src.
+export const API_BASE_URL = BASE_URL.replace(/\/$/, "");
+
 const TOKEN_KEY = "munshi_token";
 
 // Token is kept in localStorage. This file only ever runs as part of the
@@ -81,7 +84,7 @@ const FIELD_MAPS = {
   employees: { paidFrom: "account_id" },
   affiliates: { paidFrom: "account_id" },
   expenses: { accountId: "account_id" },
-  inventory: { parentName: "parent_name", supplierId: "supplier_id", alertEnabled: "alert_enabled" },
+  inventory: { parentName: "parent_name", supplierId: "supplier_id", alertEnabled: "alert_enabled", imageUrl: "image_url" },
   accounts: {},
 };
 

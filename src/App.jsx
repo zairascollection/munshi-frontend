@@ -32,7 +32,7 @@ import {
   listCustomers, customerRisk, saveCustomer,
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
   whatsappHealth, sendConfirmation, sendConfirmationBulk, setConfirmationStatus, sendDigestNow,
-  pushStockToWebsite,
+  pushStockToWebsite, API_BASE_URL,
 } from "./api";
 
 
@@ -215,8 +215,19 @@ export default function App() {
           .catch((err) => notify(`Couldn't save: ${err.message}`));
       } else {
         const before = oldList.find((x) => x.id === item.id);
-        if (before && JSON.stringify(before) !== JSON.stringify(item)) {
-          api.update(key, item.id, item).catch((err) => notify(`Couldn't update: ${err.message}`));
+        if (!before) return;
+        // Compare field by field instead of JSON.stringify. Inventory rows
+        // carry a base64 image string; stringifying the whole list on every
+        // keystroke was making the UI crawl. An untouched field is the same
+        // string reference, so !== costs nothing.
+        const patch = {};
+        Object.keys(item).forEach((k) => {
+          if (before[k] !== item[k]) patch[k] = item[k];
+        });
+        // Only send what changed — no re-uploading a 150 KB photo just
+        // because someone ticked a checkbox.
+        if (Object.keys(patch).length > 0) {
+          api.update(key, item.id, patch).catch((err) => notify(`Couldn't update: ${err.message}`));
         }
       }
     });
@@ -729,7 +740,7 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
               </select>
             ) : f.type === "file" ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Thumb url={vals[f.key]} />
+                <Thumb url={vals[f.key] || vals.imageUrl} />
                 <input
                   type="file" accept="image/*"
                   onChange={(e) => handleImageFile(f.key, e.target.files[0])}
@@ -759,10 +770,14 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
 
 function Thumb({ url, size = 34 }) {
   const [broken, setBroken] = useState(false);
+  // url is either a freshly-picked "data:..." string or a relative
+  // "/inventory/<id>/image?v=..." path served by the API host.
+  const src = url && url.startsWith("/") ? `${API_BASE_URL}${url}` : url;
+  useEffect(() => { setBroken(false); }, [src]);
   return (
     <div style={{ width: size, height: size, borderRadius: 6, overflow: "hidden", background: COLORS.surface2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-      {url && !broken ? (
-        <img src={url} onError={() => setBroken(true)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      {src && !broken ? (
+        <img src={src} onError={() => setBroken(true)} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
         <ImageIcon size={Math.round(size * 0.4)} color={COLORS.textFaint} />
       )}
@@ -883,7 +898,7 @@ function Inventory({ items, update, notify, role }) {
                 <tr key={i.id}>
                   {/* Same size for every row — variants and standalone
                       items alike, so the column lines up cleanly. */}
-                  <td><Thumb url={i.image} size={74} /></td>
+                  <td><Thumb url={i.image || i.imageUrl} size={74} /></td>
                   <td style={g.isGroup ? { paddingLeft: 26 } : undefined}>
                     {g.isGroup ? (variantLabel || i.name) : i.name}
                     {!g.isGroup && variantLabel && <span style={{ color: COLORS.textFaint, fontSize: 11.5, marginLeft: 6 }}>{variantLabel}</span>}
@@ -1909,7 +1924,7 @@ function POS({ data, update, notify, user }) {
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6, maxHeight: 380, overflowY: "auto" }} className="mn-scroll">
           {items.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : items.map((i) => (
             <button key={i.id} onClick={() => addToCart(i)} style={{ display: "flex", alignItems: "center", gap: 10, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 8, cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
-              <Thumb url={i.image} />
+              <Thumb url={i.image || i.imageUrl} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, color: COLORS.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{i.name}</div>
                 <div style={{ fontSize: 11, color: COLORS.textFaint }}>{i.sku} · {i.quantity} in stock</div>

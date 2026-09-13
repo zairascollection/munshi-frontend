@@ -108,3 +108,34 @@ GET /alerts/digest/cron?secret=<ALERTS_CRON_SECRET>       ->  0 4 * * *
 4. **Cost settings -> Integrations** mein teeno dot green hone chahiyen.
 5. **Customers** tab kholein — jo log 2+ parcel return kar chuke hain wo
    khud "Risky" mark honge. Jinko COD nahi bhejna, unhein Block COD karein.
+
+---
+
+# Speed + PWA update
+
+## Kya badla
+
+- recharts (chart library) ab alag file mein — pehli load 193 KB se 83 KB par
+- App inventory + orders aate hi khul jata hai, baqi peeche load hota hai
+- Inventory ki tasveerein ab list ke saath nahi aatin — alag URL se aati hain
+  aur browser unhein ek saal cache karta hai. Doosri load par 0 bytes.
+- Save ab sirf badla hua field bhejta hai (pehle poora record + tasveer)
+- Har state change par poori list ko JSON.stringify karna band — yehi UI ko
+  sust kar raha tha
+- PWA: home screen icon, full screen, service worker
+
+## Deploy
+
+**Backend zaroori hai** — bina uske tasveerein nazar nahi ayengi
+(list ab `image_url` bhejti hai jo purane backend mein hai hi nahi).
+
+1. Backend: `src` folder replace → deploy → `Schema migration applied.` check
+2. Frontend: `src/`, `public/`, `index.html`, `vite.config.js` — chaaron upload
+3. Vercel Redeploy, build cache ka tick hata kar
+
+Backend PEHLE. Ulta kiya to thori der tasveerein ghayab rahengi.
+
+## Deploy ke baad
+
+Service worker purani copy chala sakta hai. App band kar ke dobara kholein —
+doosri baar naya version aa jayega.
