@@ -5,7 +5,7 @@ import {
   BarChart3, ImageIcon, ShieldCheck, User, Receipt, Minus, Printer, BookUser,
   Landmark, ScanLine, LogOut, RefreshCw, Pencil, Undo2, Megaphone,
   Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
-  MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check,
+  MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check, Bell,
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
@@ -257,7 +257,8 @@ export default function App() {
     const payable =
       data.employees.filter((e) => e.status === "Pending").reduce((s, e) => s + Number(e.salary || 0), 0) +
       data.affiliates.filter((a) => a.payment === "Pending").reduce((s, a) => s + Number(a.commission || 0), 0);
-    const lowStock = data.inventory.filter((i) => Number(i.quantity) <= Number(i.reorder));
+    // Only items the owner opted into — see the "Low stock alert" checkbox.
+    const lowStock = data.inventory.filter((i) => i.alertEnabled && Number(i.quantity) <= Number(i.reorder));
     const activeParcels = data.orders.filter((o) => o.status === "Pending" || o.status === "Shipped").length;
     const stockInvestment = data.inventory.reduce((s, i) => s + Number(i.cost || 0) * Number(i.quantity || 0), 0);
     const stockSaleValue = data.inventory.reduce((s, i) => s + Number(i.price || 0) * Number(i.quantity || 0), 0);
@@ -708,7 +709,16 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
         {fields.map((f) => (
           <div key={f.key}>
             <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>{f.label}</label>
-            {f.type === "select" ? (
+            {f.type === "checkbox" ? (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: COLORS.textDim, paddingTop: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(vals[f.key])}
+                  onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.checked }))}
+                />
+                {f.hint || "Haan"}
+              </label>
+            ) : f.type === "select" ? (
               <select className="mn-input" value={vals[f.key]} onChange={(e) => set(f.key, e.target.value)}>
                 {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
@@ -783,7 +793,7 @@ function Inventory({ items, update, notify, role }) {
     return groups.map((g) => ({
       ...g,
       totalQty: g.items.reduce((t, x) => t + Number(x.quantity || 0), 0),
-      lowCount: g.items.filter((x) => Number(x.quantity) <= Number(x.reorder)).length,
+      lowCount: g.items.filter((x) => x.alertEnabled && Number(x.quantity) <= Number(x.reorder)).length,
     }));
   }, [filtered]);
 
@@ -804,6 +814,9 @@ function Inventory({ items, update, notify, role }) {
     // the change history so the owner can see who changed what.
     { key: "cost", label: "Real cost — purchase (Rs)", type: "number", default: 0 },
     { key: "price", label: "Selling price (Rs)", type: "number", default: 0 },
+    // Opt-in per item. Without this every one-off piece with qty 1 fires
+    // an alert and the badge becomes noise nobody looks at.
+    { key: "alertEnabled", label: "Low stock alert", type: "checkbox", hint: "Is item par alert bhejein", default: false },
   ];
 
   return (
@@ -813,7 +826,7 @@ function Inventory({ items, update, notify, role }) {
       extra={<SearchBox value={q} onChange={setQ} />}
     >
       <div style={{ padding: "10px 18px", fontSize: 11.5, color: COLORS.textFaint, borderBottom: `1px solid ${COLORS.borderSoft}` }}>
-        Real cost sab ko dikhti hai aur sab edit kar sakte hain — lekin har tabdeeli owner ke <b style={{ color: COLORS.textDim }}>Change history</b> mein save hoti hai (kis ne, kab, kya se kya kiya).
+        Real cost sab ko dikhti hai aur sab edit kar sakte hain — lekin har tabdeeli owner ke <b style={{ color: COLORS.textDim }}>Change history</b> mein save hoti hai (kis ne, kab, kya se kya kiya). Low stock alert sirf un items par aata hai jin par ghanti <b style={{ color: COLORS.accent }}>on</b> ki gayi ho.
       </div>
       {adding && (
         <AddForm
@@ -856,7 +869,7 @@ function Inventory({ items, update, notify, role }) {
                   </tr>
                 )}
                 {g.items.map((i) => {
-              const low = Number(i.quantity) <= Number(i.reorder);
+              const low = i.alertEnabled && Number(i.quantity) <= Number(i.reorder);
               const margin = Number(i.price) > 0
                 ? Math.round(((Number(i.price) - Number(i.cost || 0)) / Number(i.price)) * 100)
                 : 0;
@@ -866,7 +879,7 @@ function Inventory({ items, update, notify, role }) {
                   {/* Variants get a slightly smaller thumb so the group
                       stays visually indented, but every row shows its
                       own picture — that's the whole point of having one. */}
-                  <td><Thumb url={i.image} size={g.isGroup ? 42 : 52} /></td>
+                  <td><Thumb url={i.image} size={g.isGroup ? 62 : 74} /></td>
                   <td style={g.isGroup ? { paddingLeft: 26 } : undefined}>
                     {g.isGroup ? (variantLabel || i.name) : i.name}
                     {!g.isGroup && variantLabel && <span style={{ color: COLORS.textFaint, fontSize: 11.5, marginLeft: 6 }}>{variantLabel}</span>}
@@ -879,6 +892,15 @@ function Inventory({ items, update, notify, role }) {
                   <td className="mn-num" style={{ color: margin >= 30 ? COLORS.positive : margin > 0 ? COLORS.accent : COLORS.negative }}>{margin}%</td>
                   <td className="mn-num" style={{ color: COLORS.textDim }}>{fmt(Number(i.cost || 0) * Number(i.quantity || 0))}</td>
                   <td style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                    {/* One-click alert toggle — turning it on for a dozen
+                        items shouldn't mean opening a dozen edit forms. */}
+                    <button
+                      onClick={() => update((list) => list.map((x) => (x.id === i.id ? { ...x, alertEnabled: !x.alertEnabled } : x)))}
+                      title={i.alertEnabled ? "Alert on — band karne ke liye click karein" : "Alert off — chalu karne ke liye click karein"}
+                      style={{ background: "none", border: "none", color: i.alertEnabled ? COLORS.accent : COLORS.textFaint, cursor: "pointer", padding: 2, opacity: i.alertEnabled ? 1 : 0.45 }}
+                    >
+                      <Bell size={14} />
+                    </button>
                     <button onClick={() => setEditingId(i.id)} title="Edit" style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}>
                       <Pencil size={14} />
                     </button>
