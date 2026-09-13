@@ -81,7 +81,7 @@ const FIELD_MAPS = {
   employees: { paidFrom: "account_id" },
   affiliates: { paidFrom: "account_id" },
   expenses: { accountId: "account_id" },
-  inventory: { parentName: "parent_name", supplierId: "supplier_id" },
+  inventory: { parentName: "parent_name", supplierId: "supplier_id", alertEnabled: "alert_enabled" },
   accounts: {},
 };
 
