@@ -244,3 +244,22 @@ export async function sendDigestNow() {
 export async function pushStockToWebsite() {
   return request("/sync/stock", { method: "POST" });
 }
+
+// --- Order payments (udhaar clearing) ---
+export async function listPayments(orderId) {
+  return request(`/orders/${orderId}/payments`);
+}
+export async function addPayment(orderId, { amount, method, accountId, date, note }) {
+  return request(`/orders/${orderId}/payment`, {
+    method: "POST",
+    body: { amount, method, accountId, date, note },
+  });
+}
+export async function removePayment(orderId, paymentId) {
+  return request(`/orders/${orderId}/payment/${paymentId}`, { method: "DELETE" });
+}
+
+// --- Undo a return that was marked by mistake ---
+export async function undoReturn(orderId, status) {
+  return request(`/orders/${orderId}/undo-return`, { method: "POST", body: { status } });
+}

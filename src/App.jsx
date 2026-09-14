@@ -33,6 +33,7 @@ import {
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
   whatsappHealth, sendConfirmation, sendConfirmationBulk, setConfirmationStatus, sendDigestNow,
   pushStockToWebsite, API_BASE_URL,
+  listPayments, addPayment, removePayment, undoReturn,
 } from "./api";
 
 
@@ -369,7 +370,7 @@ export default function App() {
         <TopBar tab={tab} role={role} isMobile={isMobile} onMenu={() => setNavOpen(true)} />
         <div className="mn-scroll mn-pad" style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 14px" : "24px 28px" }}>
           {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} notify={notify} />}
-          {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} />}
+          {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} role={role} />}
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
           {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
           {tab === "returns" && <Returns orders={data.orders} notify={notify} role={role} settings={settings} reload={() => loadAll(role)} />}
@@ -596,6 +597,24 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
                     <td>{o.orderNo}</td>
                     <td>{o.customer}</td>
                     <td className="mn-num">{fmt(o.sell)}</td>
+                  {/* Cost is what the goods cost — POS copies it from each
+                      item's real cost in inventory when the bill is made.
+                      Profit also subtracts the courier and return money,
+                      so a returned parcel shows the loss it actually was. */}
+                  {isManagerOrAbove && <td className="mn-num" style={{ color: COLORS.textDim }}>{fmt(o.cost)}</td>}
+                  {isManagerOrAbove && (() => {
+                    const returned = o.status === "Returned";
+                    const profit = returned
+                      ? -(Number(o.deliveryCharge || 0) + Number(o.returnCharge || 0) + Number(o.refundAmount || 0))
+                      : Number(o.sell || 0) - Number(o.cost || 0) - Number(o.deliveryCharge || 0);
+                    const margin = !returned && Number(o.sell) > 0 ? Math.round((profit / Number(o.sell)) * 100) : null;
+                    return (
+                      <td className="mn-num" style={{ color: profit >= 0 ? COLORS.positive : COLORS.negative }}>
+                        {fmt(profit)}
+                        {margin !== null && <span style={{ color: COLORS.textFaint, fontSize: 11 }}> · {margin}%</span>}
+                      </td>
+                    );
+                  })()}
                     <td><Badge text={o.status} tone={orderStatusTone[o.status]} /></td>
                     <td><Badge text={paymentStatusOf(o)} tone={paymentTone[paymentStatusOf(o)]} /></td>
                   </tr>
@@ -982,6 +1001,8 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [returning, setReturning] = useState(null);
+  const [paying, setPaying] = useState(null);
+  const [dueOnly, setDueOnly] = useState(false);
   const [sendingBulk, setSendingBulk] = useState(false);
   const isOwner = role === "owner";
   const isManagerOrAbove = role === "owner" || role === "manager";
@@ -1002,6 +1023,11 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
       notify(`WhatsApp failed: ${err.message}`);
     } finally { setSendingBulk(false); }
   };
+
+  // Orders still owing money — the udhaar list.
+  const withDue = orders.filter((o) => o.status !== "Returned" && Number(o.sell || 0) - Number(o.amountPaid || 0) > 0);
+  const totalDue = withDue.reduce((t, o) => t + (Number(o.sell || 0) - Number(o.amountPaid || 0)), 0);
+  const shown = dueOnly ? withDue : orders;
 
   const fields = [
     { key: "orderNo", label: "Order No", default: "ORD-" + Math.floor(1000 + Math.random() * 9000), required: true },
@@ -1047,12 +1073,22 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   return (
     <Panel
       title="Orders & parcels" addLabel="Add order" onAdd={() => setAdding(true)}
-      count={`${orders.length} orders${unconfirmed.length ? ` · ${unconfirmed.length} confirm pending` : ""}`}
-      extra={unconfirmed.length > 0 ? (
-        <button className="mn-btn-ghost" style={{ fontSize: 12 }} disabled={sendingBulk} onClick={sendAllConfirmations}>
-          <MessageCircle size={13} /> {sendingBulk ? "Bhej raha hai..." : `WhatsApp ${unconfirmed.length} ko`}
-        </button>
-      ) : null}
+      count={`${shown.length} orders${totalDue > 0 ? ` · baqaya ${fmt(totalDue)}` : ""}`}
+      extra={(
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className={dueOnly ? "mn-btn" : "mn-btn-ghost"} style={{ fontSize: 12 }}
+            onClick={() => setDueOnly((v) => !v)}
+          >
+            <Wallet size={13} /> Udhaar {withDue.length > 0 ? `(${withDue.length})` : ""}
+          </button>
+          {unconfirmed.length > 0 && (
+            <button className="mn-btn-ghost" style={{ fontSize: 12 }} disabled={sendingBulk} onClick={sendAllConfirmations}>
+              <MessageCircle size={13} /> {sendingBulk ? "Bhej raha hai..." : `WhatsApp ${unconfirmed.length} ko`}
+            </button>
+          )}
+        </div>
+      )}
     >
       {adding && (
         <AddForm
@@ -1065,6 +1101,13 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
           }}
         />
       )}
+      {paying && (
+        <PaymentPanel
+          order={paying} accounts={accounts} notify={notify}
+          onCancel={() => setPaying(null)}
+          onDone={() => { setPaying(null); reload && reload(); }}
+        />
+      )}
       {returning && (
         <ReturnForm
           order={returning}
@@ -1073,11 +1116,11 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
           onDone={(msg) => { setReturning(null); notify(msg); reload && reload(); }}
         />
       )}
-      {orders.length === 0 ? <EmptyRow text="Abhi tak koi order nahi." /> : (
+      {shown.length === 0 ? <EmptyRow text={dueOnly ? "Kisi customer par udhaar baqi nahi." : "Abhi tak koi order nahi."} /> : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th><th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th>{isManagerOrAbove && <th>Cost</th>}{isManagerOrAbove && <th>Profit</th>}<th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
           <tbody>
-            {orders.map((o) => {
+            {shown.map((o) => {
               const pStatus = paymentStatusOf(o);
               const due = amountDueOf(o);
               return (
@@ -1105,11 +1148,18 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                     )}
                   </td>
                   <td>
-                    {o.status !== "Returned" && (
-                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setReturning(o)}>
-                        <Undo2 size={12} /> Return
-                      </button>
-                    )}
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      {o.status !== "Returned" && Number(o.sell || 0) - Number(o.amountPaid || 0) > 0 && (
+                        <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px", color: COLORS.accent }} onClick={() => setPaying(o)}>
+                          <Wallet size={12} /> Payment
+                        </button>
+                      )}
+                      {o.status !== "Returned" && (
+                        <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setReturning(o)}>
+                          <Undo2 size={12} /> Return
+                        </button>
+                      )}
+                    </div>
                   </td>
                   {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== o.id))} /></td>}
                 </tr>
@@ -1208,6 +1258,8 @@ function ReturnForm({ order, settings, onCancel, onDone }) {
 // reasons, the money lost, and a reason-wise summary so patterns show up.
 function Returns({ orders, notify, role, settings, reload }) {
   const [returning, setReturning] = useState(null);
+  const [undoing, setUndoing] = useState(null);
+  const [q, setQ] = useState("");
   const returned = orders.filter((o) => o.status === "Returned");
   const totalLoss = returned.reduce(
     (t, o) => t + Number(o.returnCharge || 0) + Number(o.refundAmount || 0) + Number(o.deliveryCharge || 0), 0
@@ -1223,7 +1275,11 @@ function Returns({ orders, notify, role, settings, reload }) {
     return Object.entries(map).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
   }, [returned]);
 
-  const pending = orders.filter((o) => o.status !== "Returned");
+  // Searchable, because after a few hundred orders scrolling to find the
+  // right one is hopeless. Shows all matches, not just the newest 25.
+  const pending = orders
+    .filter((o) => o.status !== "Returned")
+    .filter((o) => `${o.orderNo || ""} ${o.customer || ""} ${o.phone || ""} ${o.product || ""}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1243,10 +1299,18 @@ function Returns({ orders, notify, role, settings, reload }) {
         </div>
       )}
 
+      {undoing && (
+        <UndoReturnForm
+          order={undoing} notify={notify}
+          onCancel={() => setUndoing(null)}
+          onDone={() => { setUndoing(null); reload && reload(); }}
+        />
+      )}
+
       <Panel title="Returned orders" count={`${returned.length} returns`}>
         {returned.length === 0 ? <EmptyRow text="Abhi tak koi return nahi — achi baat hai." /> : (
           <div className="mn-tablewrap"><table className="mn-table">
-            <thead><tr><th>Order</th><th>Customer</th><th>City</th><th>Product</th><th>Reason</th><th>Refund</th><th>Return charge</th><th>Restocked</th><th>Date</th></tr></thead>
+            <thead><tr><th>Order</th><th>Customer</th><th>City</th><th>Product</th><th>Reason</th><th>Refund</th><th>Return charge</th><th>Restocked</th><th>Date</th><th></th></tr></thead>
             <tbody>
               {returned.map((o) => (
                 <tr key={o.id}>
@@ -1259,6 +1323,11 @@ function Returns({ orders, notify, role, settings, reload }) {
                   <td className="mn-num">{fmt(o.returnCharge)}</td>
                   <td>{o.restocked ? <Badge text="Yes" tone="positive" /> : <Badge text="No" />}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.returnedAt || o.date}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setUndoing(o)}>
+                      <RefreshCw size={11} /> Undo
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1266,12 +1335,12 @@ function Returns({ orders, notify, role, settings, reload }) {
         )}
       </Panel>
 
-      <Panel title="Naya return record karein" count={`${pending.length} active orders`}>
+      <Panel title="Naya return record karein" count={`${pending.length} active orders`} extra={<SearchBox value={q} onChange={setQ} />}>
         {pending.length === 0 ? <EmptyRow text="Koi active order nahi." /> : (
           <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {pending.slice(0, 25).map((o) => (
+              {pending.slice(0, 60).map((o) => (
                 <tr key={o.id}>
                   <td>{o.orderNo}</td>
                   <td>{o.customer}</td>
@@ -1828,7 +1897,8 @@ function ReceiptView({ receipt, onNew }) {
   );
 }
 
-function POS({ data, update, notify, user }) {
+function POS({ data, update, notify, user, role }) {
+  const isManagerOrAbove = role === "owner" || role === "manager";
   const [cart, setCart] = useState([]);
   const [search, setSearch] = useState("");
   const [scanCode, setScanCode] = useState("");
@@ -1872,8 +1942,19 @@ function POS({ data, update, notify, user }) {
   const removeItem = (id) => setCart((c) => c.filter((x) => x.id !== id));
 
   const subtotal = cart.reduce((s, c) => s + c.price * c.qty, 0);
-  const costTotal = cart.reduce((s, c) => s + c.cost * c.qty, 0);
+  const costTotal = cart.reduce((s, c) => s + (Number(c.cost) || 0) * c.qty, 0);
   const total = Math.max(0, subtotal - Number(discount || 0));
+
+  // Discount comes out of profit, not out of cost — so profit is measured
+  // against what the customer actually pays.
+  const billProfit = total - costTotal;
+  const billMargin = total > 0 ? Math.round((billProfit / total) * 100) : 0;
+  // An item with cost 0 was never costed properly; flag it rather than
+  // quietly reporting 100% margin.
+  const missingCost = cart.filter((c) => !Number(c.cost)).map((c) => c.name);
+
+  // Warn at checkout rather than after, when the bill is already saved.
+  const costWarning = missingCost.length > 0;
 
   const generateBill = () => {
     if (cart.length === 0) return;
@@ -1968,6 +2049,25 @@ function POS({ data, update, notify, user }) {
           <input className="mn-input" type="number" style={{ width: 90, textAlign: "right" }} value={discount} onChange={(e) => setDiscount(e.target.value)} />
         </div>
         <RowLine label="Total" value={total} bold />
+
+        {/* Profit on this bill. costTotal comes straight from each item's
+            real cost in inventory, so the margin is the actual one — not a
+            guess. Deliberately not on the printed receipt: that goes to
+            the customer. */}
+        {isManagerOrAbove && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${COLORS.borderSoft}` }}>
+            <RowLine label="Inventory cost" value={-costTotal} negative />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 700, padding: "3px 0", color: billProfit >= 0 ? COLORS.positive : COLORS.negative }}>
+              <span>Is bill ka profit</span>
+              <span className="mn-num">{fmt(billProfit)}{total > 0 ? ` · ${billMargin}%` : ""}</span>
+            </div>
+            {missingCost.length > 0 && (
+              <div style={{ fontSize: 11, color: COLORS.negative, marginTop: 4 }}>
+                In items ki cost inventory mein 0 hai, is liye profit zyada dikh raha hai: {missingCost.join(", ")}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ marginTop: 12 }}>
           <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Payment</label>
@@ -3407,6 +3507,161 @@ function CustomerRiskBanner({ phone }) {
           {risk.returned > 0 && !risk.risky ? ` · ${risk.returned} return` : ""}
         </div>
         {risk.notes && <div style={{ marginTop: 3, fontStyle: "italic" }}>{risk.notes}</div>}
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Payments against an order — recording the udhaar as it comes in.
+//
+// Each instalment is its own record, so a bill settled in three visits
+// shows three entries with dates instead of one number that quietly
+// changed. The cash also lands in whichever account is chosen.
+// =====================================================================
+function PaymentPanel({ order, accounts, notify, onDone, onCancel }) {
+  const due = Math.max(0, Number(order.sell || 0) - Number(order.amountPaid || 0));
+  const [amount, setAmount] = useState(due);
+  const [method, setMethod] = useState(order.method || "Cash");
+  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState("");
+  const [rows, setRows] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  const load = () => listPayments(order.id).then(setRows).catch(() => {});
+  useEffect(() => { load(); }, [order.id]);
+
+  const save = async () => {
+    const value = Number(amount);
+    if (!value || value <= 0) return notify("Amount likhein");
+    if (value > due + 0.01) return notify(`Baqaya sirf ${fmt(due)} hai`);
+    setSaving(true);
+    try {
+      await addPayment(order.id, { amount: value, method, accountId: accountId || null, date, note });
+      notify(`${fmt(value)} receive ho gaya`);
+      onDone();
+    } catch (err) {
+      notify(`Payment failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  const del = async (p) => {
+    if (!window.confirm(`${fmt(p.amount)} wali payment delete karein?`)) return;
+    try {
+      await removePayment(order.id, p.id);
+      notify("Payment delete ho gayi");
+      onDone();
+    } catch (err) { notify(`Delete failed: ${err.message}`); }
+  };
+
+  return (
+    <div style={{ padding: 18, borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>
+          Payment — {order.orderNo} · {order.customer}
+          <span style={{ color: due > 0 ? COLORS.negative : COLORS.positive, marginLeft: 10, fontWeight: 400 }}>
+            Baqaya {fmt(due)}
+          </span>
+        </span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+
+      {due > 0 ? (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px,1fr))", gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Kitna mila (Rs)</label>
+              <input className="mn-input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Tareeqa</label>
+              <select className="mn-input" value={method} onChange={(e) => setMethod(e.target.value)}>
+                {["Cash", "COD", "Bank Transfer", "JazzCash", "EasyPaisa"].map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Kis account mein</label>
+              <select className="mn-input" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                <option value="">— koi nahi —</option>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Tareekh</label>
+              <input className="mn-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <input className="mn-input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" />
+            </div>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Payment receive karein"}</button>
+            <button className="mn-btn-ghost" onClick={() => setAmount(due)}>Poora baqaya</button>
+            <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 13, color: COLORS.positive }}>Ye order poora clear ho chuka hai.</div>
+      )}
+
+      {rows.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <SectionHeading title="Payment history" />
+          {rows.map((p) => (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12.5, padding: "5px 0", borderBottom: `1px solid ${COLORS.borderSoft}` }}>
+              <span style={{ color: COLORS.textFaint, minWidth: 88 }}>{String(p.date).slice(0, 10)}</span>
+              <span className="mn-num" style={{ minWidth: 88, color: COLORS.positive }}>{fmt(p.amount)}</span>
+              <span style={{ color: COLORS.textDim, minWidth: 90 }}>{p.method || "—"}</span>
+              <span style={{ color: COLORS.textFaint, flex: 1 }}>
+                {p.account_name ? `${p.account_name} · ` : ""}{p.received_by || ""}{p.note ? ` · ${p.note}` : ""}
+              </span>
+              <DeleteBtn onClick={() => del(p)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Undoing a return that was marked by mistake. Asks what the order should
+// go back to, because "it wasn't returned" can mean delivered or still out.
+function UndoReturnForm({ order, notify, onDone, onCancel }) {
+  const [status, setStatus] = useState("Delivered");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const res = await undoReturn(order.id, status);
+      const back = (res.removed || []).map((r) => `${r.name} -${r.removed}`).join(", ");
+      notify(back ? `Return hata diya. Stock wapas nikala: ${back}` : "Return hata diya");
+      onDone();
+    } catch (err) {
+      notify(`Undo failed: ${err.message}`);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ padding: 18, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 9 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>Return hatayein — {order.orderNo} · {order.customer}</span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+      <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Order ab kis halat mein hai?</label>
+      <select className="mn-input" style={{ maxWidth: 220 }} value={status} onChange={(e) => setStatus(e.target.value)}>
+        {["Delivered", "Shipped", "Pending"].map((x) => <option key={x} value={x}>{x}</option>)}
+      </select>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+        {order.restocked
+          ? "Return ke waqt stock wapas inventory mein gaya tha — woh dobara nikal liya jayega."
+          : "Return ke waqt stock wapas nahi gaya tha, is liye inventory par koi asar nahi hoga."}
+        {" "}Refund aur return charge sifar ho jayenge.
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <button className="mn-btn" onClick={submit} disabled={busy}>{busy ? "..." : "Haan, return hatayein"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
