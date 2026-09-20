@@ -6,6 +6,7 @@ import {
   Landmark, ScanLine, LogOut, RefreshCw, Pencil, Undo2, Megaphone,
   Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
   MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check, Bell,
+  PackageCheck, UserCheck,
 } from "lucide-react";
 import Login from "./Login";
 import { COLORS, CHART_COLORS, fmt } from "./theme";
@@ -34,6 +35,8 @@ import {
   whatsappHealth, sendConfirmation, sendConfirmationBulk, setConfirmationStatus, sendDigestNow,
   pushStockToWebsite, API_BASE_URL,
   listPayments, addPayment, removePayment, undoReturn,
+  listConsignments, getConsignment, createConsignment, settleConsignment, removeConsignment, listSellers,
+  backupStatus, downloadBackup, restoreBackup,
 } from "./api";
 
 
@@ -60,6 +63,7 @@ const NAV = [
   { id: "customers", label: "Customers", icon: BookUser, ownerOnly: false },
   { id: "employees", label: "Employees", icon: Users, ownerOnly: false },
   { id: "returns", label: "Returns", icon: Undo2, ownerOnly: false },
+  { id: "consignments", label: "Stock diya hua", icon: PackageCheck, ownerOnly: false },
   { id: "reports", label: "Reports", icon: BarChart3, ownerOnly: false },
   { id: "profit", label: "Profit tracker", icon: TrendingUp, ownerOnly: true, managerOk: true },
   { id: "monthly", label: "Monthly sheet", icon: CalendarDays, ownerOnly: true, managerOk: true },
@@ -79,7 +83,7 @@ const NAV = [
 // nav is grouped by what you're actually trying to do.
 const NAV_SECTIONS = [
   { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers"] },
-  { title: "Stock aana", ids: ["purchases", "suppliers"] },
+  { title: "Stock aana / jana", ids: ["purchases", "suppliers", "consignments"] },
   { title: "Paisa", ids: ["profit", "monthly", "reports", "finance", "accounts", "expenses", "adspend"] },
   { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
 ];
@@ -374,6 +378,7 @@ export default function App() {
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
           {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
           {tab === "returns" && <Returns orders={data.orders} notify={notify} role={role} settings={settings} reload={() => loadAll(role)} />}
+          {tab === "consignments" && <Consignments inventory={data.inventory} affiliates={data.affiliates || []} orders={data.orders} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "customers" && <Customers orders={data.orders} notify={notify} role={role} />}
           {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
           {tab === "reports" && <Reports data={data} role={role} />}
@@ -744,7 +749,13 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
         {fields.map((f) => (
           <div key={f.key}>
             <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>{f.label}</label>
-            {f.type === "checkbox" ? (
+            {f.type === "seller" ? (
+              <SellerPicker
+                label={null} compact
+                value={vals[f.key]} type={vals[f.typeKey || "soldByType"]}
+                onChange={(name, kind) => setVals((v) => ({ ...v, [f.key]: name, [f.typeKey || "soldByType"]: kind }))}
+              />
+            ) : f.type === "checkbox" ? (
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: COLORS.textDim, paddingTop: 6 }}>
                 <input
                   type="checkbox"
@@ -1003,6 +1014,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   const [returning, setReturning] = useState(null);
   const [paying, setPaying] = useState(null);
   const [dueOnly, setDueOnly] = useState(false);
+  const [sellerFilter, setSellerFilter] = useState("");
   const [sendingBulk, setSendingBulk] = useState(false);
   const isOwner = role === "owner";
   const isManagerOrAbove = role === "owner" || role === "manager";
@@ -1027,7 +1039,8 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
   // Orders still owing money — the udhaar list.
   const withDue = orders.filter((o) => o.status !== "Returned" && Number(o.sell || 0) - Number(o.amountPaid || 0) > 0);
   const totalDue = withDue.reduce((t, o) => t + (Number(o.sell || 0) - Number(o.amountPaid || 0)), 0);
-  const shown = dueOnly ? withDue : orders;
+  const sellerNames = [...new Set(orders.map((o) => o.soldBy).filter(Boolean))].sort();
+  const shown = (dueOnly ? withDue : orders).filter((o) => !sellerFilter || o.soldBy === sellerFilter);
 
   const fields = [
     { key: "orderNo", label: "Order No", default: "ORD-" + Math.floor(1000 + Math.random() * 9000), required: true },
@@ -1048,6 +1061,9 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
     // Who wrote this bill. Pre-filled with the logged-in user but editable,
     // so an owner entering yesterday's counter sales can credit the right person.
     { key: "billedBy", label: "Billed by", default: user?.name || "" },
+    // Kis ke through sale hui — staff, affiliate, ya koi aur. Baad mein
+    // koi masla ho to yahi batata hai ke order kahan se aya tha.
+    { key: "soldBy", label: "Sold by — kis ke through", type: "seller", default: user?.name || "" },
   ];
 
   // Clicking the status badge cycles Pending -> Shipped -> Delivered.
@@ -1075,7 +1091,16 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
       title="Orders & parcels" addLabel="Add order" onAdd={() => setAdding(true)}
       count={`${shown.length} orders${totalDue > 0 ? ` · baqaya ${fmt(totalDue)}` : ""}`}
       extra={(
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {sellerNames.length > 0 && (
+            <select
+              className="mn-input" style={{ width: 170 }}
+              value={sellerFilter} onChange={(e) => setSellerFilter(e.target.value)}
+            >
+              <option value="">Sold by — sab</option>
+              {sellerNames.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          )}
           <button
             className={dueOnly ? "mn-btn" : "mn-btn-ghost"} style={{ fontSize: 12 }}
             onClick={() => setDueOnly((v) => !v)}
@@ -1118,7 +1143,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
       )}
       {shown.length === 0 ? <EmptyRow text={dueOnly ? "Kisi customer par udhaar baqi nahi." : "Abhi tak koi order nahi."} /> : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th>{isManagerOrAbove && <th>Cost</th>}{isManagerOrAbove && <th>Profit</th>}<th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th>{isManagerOrAbove && <th>Cost</th>}{isManagerOrAbove && <th>Profit</th>}<th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Sold by</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
           <tbody>
             {shown.map((o) => {
               const pStatus = paymentStatusOf(o);
@@ -1126,7 +1151,10 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
               return (
                 <tr key={o.id}>
                   <td>{o.orderNo}</td>
-                  <td>{o.customer}</td>
+                  <td>
+                    {o.customer}
+                    {o.phone && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{o.phone}</div>}
+                  </td>
                   <td style={{ color: COLORS.textDim }}>{o.product}{o.qty ? ` ×${o.qty}` : ""}</td>
                   <td className="mn-num">{fmt(o.sell)}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.courier || "—"}{o.tracking ? ` · ${o.tracking}` : ""}</td>
@@ -1136,6 +1164,16 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                   </td>
                   <td>
                     <ConfirmationCell order={o} notify={notify} onChanged={reload} />
+                  </td>
+                  {/* Sold by = kis ke through. Badge marks an affiliate
+                      sale so it stands out from an in-house one. */}
+                  <td style={{ fontSize: 12 }}>
+                    {o.soldBy ? (
+                      <>
+                        <div style={{ color: COLORS.text }}>{o.soldBy}</div>
+                        {o.soldByType === "Affiliate" && <Badge text="Affiliate" tone="info" />}
+                      </>
+                    ) : <span style={{ color: COLORS.textFaint }}>—</span>}
                   </td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.billedBy || "—"}</td>
                   <td style={{ position: "relative" }}>
@@ -1887,6 +1925,11 @@ function ReceiptView({ receipt, onNew }) {
         {due > 0 && <RowLine label="Balance due" value={due} negative />}
         {receipt.method && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 8 }}>Paid via {receipt.method}</div>}
         {receipt.billedBy && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 2 }}>Billed by {receipt.billedBy}</div>}
+        {/* On the customer's copy too: if they come back with a problem,
+            the slip itself says who they dealt with. */}
+        {receipt.soldBy && receipt.soldBy !== receipt.billedBy && (
+          <div style={{ fontSize: 11, color: COLORS.textFaint }}>Sold by {receipt.soldBy}</div>
+        )}
         <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 12, textAlign: "center" }}>Shukriya! Dobara tashreef laayen.</div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center" }}>
@@ -1905,6 +1948,8 @@ function POS({ data, update, notify, user, role }) {
   const [customer, setCustomer] = useState("");
   const [phone, setPhone] = useState("");
   const [city, setCity] = useState("");
+  const [soldBy, setSoldBy] = useState("");
+  const [soldByType, setSoldByType] = useState("");
   const [discount, setDiscount] = useState(0);
   const [mode, setMode] = useState("Paid");
   const [partialAmount, setPartialAmount] = useState(0);
@@ -1967,6 +2012,10 @@ function POS({ data, update, notify, user, role }) {
       qty: totalQty, sell: total, cost: costTotal, courier: "In-store", tracking: "", status,
       amountPaid, dueDate: amountPaid < total ? dueDate : "", method, date: todayISO(),
       billedBy: user?.name || "Unknown", city,
+      // Kis ke through bika — default apna naam, lekin affiliate ki sale
+      // counter par bill hoti hai to wahan uska naam chuna jata hai.
+      soldBy: soldBy || user?.name || "Unknown",
+      soldByType: soldBy ? soldByType || "Other" : "Staff",
       // Counter sale: no courier, so no delivery charge — and tagging the
       // channel keeps POS separate from website sales in the profit tracker.
       channel: "Walk-in / POS", deliveryCharge: 0,
@@ -1982,6 +2031,7 @@ function POS({ data, update, notify, user, role }) {
     }
     setReceipt({ ...newOrder, items: cart, discount: Number(discount || 0), subtotal });
     setCart([]); setCustomer(""); setPhone(""); setCity(""); setDiscount(0); setPartialAmount(0); setDueDate("");
+    setSoldBy(""); setSoldByType("");
     notify("Bill generated");
   };
 
@@ -2040,6 +2090,9 @@ function POS({ data, update, notify, user, role }) {
         </div>
         <div style={{ marginBottom: 10 }}>
           <input className="mn-input" placeholder="City (optional)" value={city} onChange={(e) => setCity(e.target.value)} />
+          <div style={{ marginTop: 8 }}>
+            <SellerPicker value={soldBy} type={soldByType} onChange={(n, k) => { setSoldBy(n); setSoldByType(k); }} />
+          </div>
           <CustomerRiskBanner phone={phone} />
         </div>
 
@@ -2718,7 +2771,11 @@ function ProfitTracker({ notify }) {
       <BreakdownTable title="City-wise performance" rows={a.byCity} keyLabel="City" hint="Jahan return rate zyada hai, wahan COD band karke advance lein." />
       <BreakdownTable title="Courier-wise performance" rows={a.byCourier} keyLabel="Courier" hint="Jo courier zyada return karwata hai, uska hissa kam karein." />
       <BreakdownTable title="Channel-wise performance" rows={a.byChannel} keyLabel="Channel" />
-      <BreakdownTable title="Staff-wise sales (billed by)" rows={a.byStaff} keyLabel="Billed by" hint="Har bill par billing karne wale ka naam save hota hai." />
+      <BreakdownTable
+        title="Kis ke through kitni sale (sold by)" rows={a.bySeller} keyLabel="Sold by"
+        hint="Affiliates aur staff dono yahan aate hain — commission aur performance dono isi se dekhein."
+      />
+      <BreakdownTable title="Staff-wise sales (billed by)" rows={a.byStaff} keyLabel="Billed by" hint="Ye woh banda hai jis ne bill likha — sold by se alag ho sakta hai." />
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
         <SectionHeading title="Product-wise profit" />
@@ -2843,6 +2900,9 @@ function MonthlySheet({ notify }) {
     push("COURIER", "Orders", "Delivered", "Returned", "Return rate %", "Revenue", "Profit");
     sheet.byCourier.forEach((c) => push(c.key, c.orders, c.delivered, c.returned, c.returnRate, c.revenue, c.profit));
     push("");
+    push("SOLD BY", "Orders", "Revenue", "Profit");
+    (sheet.bySeller || []).forEach((c) => push(c.key, c.orders, c.revenue, c.profit));
+    push("");
     push("BILLED BY", "Orders", "Revenue", "Profit");
     sheet.byStaff.forEach((c) => push(c.key, c.orders, c.revenue, c.profit));
     push("");
@@ -2944,6 +3004,7 @@ function MonthlySheet({ notify }) {
 
       <BreakdownTable title="City-wise" rows={sheet.byCity} keyLabel="City" />
       <BreakdownTable title="Courier-wise" rows={sheet.byCourier} keyLabel="Courier" />
+      <BreakdownTable title="Sold by — kis ke through" rows={sheet.bySeller} keyLabel="Sold by" />
       <BreakdownTable title="Staff-wise (billed by)" rows={sheet.byStaff} keyLabel="Billed by" />
     </div>
   );
@@ -3073,6 +3134,7 @@ function CostSettings({ settings, onSaved, notify }) {
         <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save settings"}</button>
       </div>
 
+      <BackupPanel notify={notify} />
       <IntegrationsPanel notify={notify} />
     </div>
   );
@@ -3662,6 +3724,676 @@ function UndoReturnForm({ order, notify, onDone, onCancel }) {
       <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
         <button className="mn-btn" onClick={submit} disabled={busy}>{busy ? "..." : "Haan, return hatayein"}</button>
         <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Consignment stock — maal jo affiliate ko bechne ke liye diya gaya.
+//
+// The goods leave the shop but are still ours, so handing them out drops
+// the inventory count and records who is holding what. When the affiliate
+// comes back, unsold pieces go straight back on the shelf and sold ones
+// are simply marked sold — the remaining figure is always
+// qty_out − returned − sold, so nothing can quietly drift.
+// =====================================================================
+function Consignments({ inventory, affiliates, orders, notify, role, reload }) {
+  const [rows, setRows] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [settling, setSettling] = useState(null);
+  const [q, setQ] = useState("");
+  const isOwner = role === "owner";
+
+  const load = () => listConsignments().then(setRows).catch((err) => notify(`Load failed: ${err.message}`));
+  useEffect(() => { load(); }, []);
+
+  const del = async (c) => {
+    if (!window.confirm(`${c.ref_no} delete karein? Jo maal abhi ${c.holder} ke paas hai woh wapas inventory mein chala jayega.`)) return;
+    try {
+      await removeConsignment(c.id);
+      notify("Consignment delete ho gaya");
+      load();
+      reload && reload();
+    } catch (err) { notify(`Delete failed: ${err.message}`); }
+  };
+
+  if (!rows) return <EmptyRow text="Load ho raha hai..." />;
+
+  const filtered = rows.filter((c) =>
+    `${c.ref_no || ""} ${c.holder || ""} ${c.phone || ""}`.toLowerCase().includes(q.toLowerCase())
+  );
+  const open = rows.filter((c) => c.status !== "Settled");
+  const outValue = rows.reduce((t, c) => t + Number(c.value_out || 0), 0);
+  const outUnits = rows.reduce((t, c) => t + Number(c.remaining || 0), 0);
+
+  // Who is holding the most right now — the person to chase first.
+  const byHolder = useMemo(() => {
+    const map = {};
+    rows.forEach((c) => {
+      const k = c.holder || "—";
+      if (!map[k]) map[k] = { holder: k, units: 0, value: 0, open: 0 };
+      map[k].units += Number(c.remaining || 0);
+      map[k].value += Number(c.value_out || 0);
+      if (c.status !== "Settled") map[k].open += 1;
+    });
+    return Object.values(map).filter((x) => x.units > 0).sort((a, b) => b.value - a.value);
+  }, [rows]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Bahar gaya stock" value={`${outUnits} pcs`} sub={`${open.length} consignment khulay hain`} tone={outUnits > 0 ? "negative" : undefined} />
+        <StatCard label="Us ki sale value" value={fmt(outValue)} sub="Jo abhi logon ke paas hai" />
+        <StatCard label="Sab se zyada kis ke paas" value={byHolder[0]?.holder || "—"} sub={byHolder[0] ? `${byHolder[0].units} pcs · ${fmt(byHolder[0].value)}` : "Kisi ke paas nahi"} />
+      </div>
+
+      {creating && (
+        <ConsignmentForm
+          inventory={inventory} affiliates={affiliates}
+          onCancel={() => setCreating(false)}
+          onSaved={() => { setCreating(false); notify("Stock issue ho gaya"); load(); reload && reload(); }}
+          notify={notify}
+        />
+      )}
+
+      {settling && (
+        <SettleConsignment
+          id={settling}
+          onCancel={() => setSettling(null)}
+          onDone={() => { setSettling(null); load(); reload && reload(); }}
+          notify={notify}
+        />
+      )}
+
+      <Panel
+        title="Stock diya hua" addLabel="Stock issue karein" onAdd={() => setCreating(true)}
+        count={`${rows.length} consignments`}
+        extra={<SearchBox value={q} onChange={setQ} />}
+      >
+        {filtered.length === 0 ? (
+          <EmptyRow text="Abhi tak kisi ko stock nahi diya. 'Stock issue karein' se shuru karein." />
+        ) : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr>
+              <th>Ref</th><th>Kis ke paas</th><th>Date</th><th>Diya</th><th>Wapas</th><th>Becha</th>
+              <th>Abhi paas hai</th><th>Value</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.ref_no}</td>
+                  <td>
+                    {c.holder || "—"}
+                    {c.phone && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{c.phone}</div>}
+                  </td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(c.date).slice(0, 10)}</td>
+                  <td className="mn-num">{c.total_out}</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{c.total_returned || "—"}</td>
+                  <td className="mn-num" style={{ color: c.total_sold ? COLORS.positive : COLORS.textFaint }}>{c.total_sold || "—"}</td>
+                  <td className="mn-num" style={{ color: c.remaining > 0 ? COLORS.accent : COLORS.textFaint }}>{c.remaining}</td>
+                  <td className="mn-num">{fmt(c.value_out)}</td>
+                  <td><Badge text={c.status} tone={c.status === "Settled" ? "positive" : c.status === "Partial" ? "accent" : "info"} /></td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      {c.status !== "Settled" && (
+                        <button className="mn-btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setSettling(c.id)}>
+                          <Check size={11} /> Hisab
+                        </button>
+                      )}
+                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setSettling(c.id)}>Items</button>
+                      {isOwner && <DeleteBtn onClick={() => del(c)} />}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </Panel>
+
+      {byHolder.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+          <SectionHeading title="Kis ke paas kitna maal hai" />
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr><th>Naam</th><th>Khulay consignment</th><th>Units</th><th>Value</th></tr></thead>
+            <tbody>
+              {byHolder.map((h) => (
+                <tr key={h.holder}>
+                  <td>{h.holder}</td>
+                  <td className="mn-num" style={{ color: COLORS.textDim }}>{h.open}</td>
+                  <td className="mn-num" style={{ color: COLORS.accent }}>{h.units}</td>
+                  <td className="mn-num">{fmt(h.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
+  const sellers = useSellers();
+  // Prefer the full list when it loaded (manager+), fall back to the
+  // names-only list so staff get the same dropdown.
+  const holderOptions = affiliates.length > 0 ? affiliates : sellers.affiliates;
+  const [refNo, setRefNo] = useState("CN-" + Math.floor(1000 + Math.random() * 9000));
+  const [affiliateId, setAffiliateId] = useState("");
+  const [holderName, setHolderName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [notes, setNotes] = useState("");
+  const [items, setItems] = useState([{ key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null }]);
+  const [saving, setSaving] = useState(false);
+
+  const setItem = (key, patch) => setItems((l) => l.map((it) => (it.key === key ? { ...it, ...patch } : it)));
+  const addRow = () => setItems((l) => [...l, { key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null }]);
+  const removeRow = (key) => setItems((l) => (l.length > 1 ? l.filter((it) => it.key !== key) : l));
+
+  const pick = (key, id) => {
+    const inv = inventory.find((x) => x.id === id);
+    setItem(key, inv
+      ? {
+          inventoryId: id, name: inv.name, sku: inv.sku || "",
+          unitPrice: Number(inv.price) || 0, unitCost: Number(inv.cost) || 0,
+          stock: Number(inv.quantity) || 0,
+        }
+      : { inventoryId: "", name: "", sku: "", stock: null });
+  };
+
+  const totalUnits = items.reduce((t, it) => t + (Number(it.qty) || 0), 0);
+  const totalValue = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unitPrice) || 0), 0);
+  // Catch an over-issue before the server has to reject the whole batch.
+  const overIssued = items.filter((it) => it.stock !== null && Number(it.qty) > it.stock);
+
+  const save = async () => {
+    const clean = items.filter((it) => String(it.name).trim() && Number(it.qty) > 0);
+    if (clean.length === 0) return notify("Kam az kam ek item add karein");
+    if (!affiliateId && !holderName.trim()) return notify("Affiliate chunein ya naam likhein");
+    if (overIssued.length > 0) return notify(`${overIssued[0].name}: itna stock nahi hai`);
+    setSaving(true);
+    try {
+      await createConsignment({
+        refNo, affiliateId: affiliateId || null, holderName: holderName || null,
+        phone, date, notes,
+        items: clean.map((it) => ({
+          inventoryId: it.inventoryId || null, name: it.name, sku: it.sku,
+          qty: Number(it.qty), unitPrice: Number(it.unitPrice) || 0, unitCost: Number(it.unitCost) || 0,
+        })),
+      });
+      onSaved();
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title="Stock issue karein" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Ref number</label>
+          <input className="mn-input" value={refNo} onChange={(e) => setRefNo(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Affiliate</label>
+          <select className="mn-input" value={affiliateId} onChange={(e) => setAffiliateId(e.target.value)}>
+            <option value="">— list mein nahi —</option>
+            {holderOptions.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Ya naam likhein</label>
+          <input className="mn-input" value={holderName} onChange={(e) => setHolderName(e.target.value)} placeholder="Jis ko de rahe hain" disabled={Boolean(affiliateId)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Phone</label>
+          <input className="mn-input" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Date</label>
+          <input className="mn-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr><th>Item</th><th>Stock</th><th>Kitne diye</th><th>Rate</th><th>Value</th><th></th></tr></thead>
+        <tbody>
+          {items.map((it) => {
+            const over = it.stock !== null && Number(it.qty) > it.stock;
+            return (
+              <tr key={it.key}>
+                <td style={{ minWidth: 200 }}>
+                  <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
+                    <option value="">— item chunein —</option>
+                    {inventory.map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="mn-num" style={{ color: COLORS.textFaint }}>{it.stock === null ? "—" : it.stock}</td>
+                <td>
+                  <input
+                    className="mn-input" type="number" style={{ width: 80, borderColor: over ? COLORS.negative : undefined }}
+                    value={it.qty} onChange={(e) => setItem(it.key, { qty: e.target.value })}
+                  />
+                </td>
+                <td><input className="mn-input" type="number" style={{ width: 90 }} value={it.unitPrice} onChange={(e) => setItem(it.key, { unitPrice: e.target.value })} /></td>
+                <td className="mn-num">{fmt((Number(it.qty) || 0) * (Number(it.unitPrice) || 0))}</td>
+                <td><button onClick={() => removeRow(it.key)} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={14} /></button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+        <button className="mn-btn-ghost" onClick={addRow}><Plus size={13} /> Add row</button>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{totalUnits} pcs · <span className="mn-num">{fmt(totalValue)}</span></div>
+      </div>
+
+      {overIssued.length > 0 && (
+        <div style={{ fontSize: 12, color: COLORS.negative, marginTop: 8 }}>
+          Itna stock maujood nahi: {overIssued.map((x) => x.name).join(", ")}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <input className="mn-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Stock issue karein"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+        Issue karte hi ye maal inventory se kam ho jayega — kyunki dukan mein ab maujood nahi. Jab wapas aayega ya bik jayega, <b style={{ color: COLORS.textDim }}>Hisab</b> se record karein.
+      </div>
+    </div>
+  );
+}
+
+// The settle screen: what came back, what sold. Both together in one pass,
+// because that's how it actually happens — the affiliate walks in with
+// some cash and some unsold pieces.
+function SettleConsignment({ id, onCancel, onDone, notify }) {
+  const [c, setC] = useState(null);
+  const [lines, setLines] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getConsignment(id).then((data) => {
+      setC(data);
+      setLines(Object.fromEntries(data.items.map((it) => [it.id, { returned: "", sold: "" }])));
+    }).catch((err) => notify(`Load failed: ${err.message}`));
+  }, [id]);
+
+  if (!c) return null;
+
+  const setLine = (itemId, patch) => setLines((l) => ({ ...l, [itemId]: { ...l[itemId], ...patch } }));
+
+  const save = async () => {
+    const payload = c.items
+      .map((it) => ({
+        itemId: it.id,
+        returned: Number(lines[it.id]?.returned) || 0,
+        sold: Number(lines[it.id]?.sold) || 0,
+      }))
+      .filter((l) => l.returned > 0 || l.sold > 0);
+    if (payload.length === 0) return notify("Kuch record karne ko nahi");
+
+    const bad = payload.find((l) => {
+      const item = c.items.find((x) => x.id === l.itemId);
+      return l.returned + l.sold > item.remaining;
+    });
+    if (bad) {
+      const item = c.items.find((x) => x.id === bad.itemId);
+      return notify(`${item.name}: sirf ${item.remaining} baqi hain`);
+    }
+
+    setSaving(true);
+    try {
+      const res = await settleConsignment(id, payload);
+      const back = res.applied.filter((a) => a.returned > 0).map((a) => `${a.name} +${a.returned}`).join(", ");
+      notify(back ? `Record ho gaya. Stock wapas: ${back}` : "Record ho gaya");
+      onDone();
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  const allSettled = c.items.every((it) => it.remaining <= 0);
+
+  return (
+    <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>
+          {c.ref_no} — {c.holder}
+          <span style={{ color: COLORS.textFaint, fontWeight: 400, marginLeft: 8 }}>{String(c.date).slice(0, 10)}</span>
+        </span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr>
+          <th>Item</th><th>Diya</th><th>Pehle wapas</th><th>Pehle becha</th><th>Abhi paas hai</th>
+          <th>Ab wapas aya</th><th>Ab bika</th>
+        </tr></thead>
+        <tbody>
+          {c.items.map((it) => (
+            <tr key={it.id}>
+              <td>{it.name}{it.sku && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{it.sku}</div>}</td>
+              <td className="mn-num">{it.qty_out}</td>
+              <td className="mn-num" style={{ color: COLORS.textDim }}>{it.qty_returned || "—"}</td>
+              <td className="mn-num" style={{ color: COLORS.textDim }}>{it.qty_sold || "—"}</td>
+              <td className="mn-num" style={{ color: it.remaining > 0 ? COLORS.accent : COLORS.positive }}>{it.remaining}</td>
+              <td>
+                <input
+                  className="mn-input" type="number" style={{ width: 75 }} disabled={it.remaining <= 0}
+                  value={lines[it.id]?.returned ?? ""} placeholder="0"
+                  onChange={(e) => setLine(it.id, { returned: e.target.value })}
+                />
+              </td>
+              <td>
+                <input
+                  className="mn-input" type="number" style={{ width: 75 }} disabled={it.remaining <= 0}
+                  value={lines[it.id]?.sold ?? ""} placeholder="0"
+                  onChange={(e) => setLine(it.id, { sold: e.target.value })}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+
+      {c.notes && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 10 }}>{c.notes}</div>}
+
+      {allSettled ? (
+        <div style={{ fontSize: 13, color: COLORS.positive, marginTop: 14 }}>Is consignment ka poora hisab ho chuka hai.</div>
+      ) : (
+        <>
+          <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+            <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Saving..." : "Hisab save karein"}</button>
+            <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
+            Jo maal wapas aya woh inventory mein add ho jayega. Jo bik gaya uska stock pehle hi kam ho chuka hai, is liye dobara kuch nahi hoga — us ki sale POS ya Orders se alag record karein, <b style={{ color: COLORS.textDim }}>Sold by</b> mein isi banday ka naam daal kar.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// "Sold by" — who the sale actually came through.
+//
+// billed_by is whoever typed the bill in; this is the person or affiliate
+// the customer dealt with. Months later, when someone rings up about an
+// order, this is the field that answers "kis ke through gaya tha".
+//
+// Loads names once and shares them across every screen that needs them,
+// so opening POS doesn't refetch the same list on every render.
+// =====================================================================
+let sellerCache = null;
+let sellerPromise = null;
+
+function useSellers() {
+  const [sellers, setSellers] = useState(sellerCache);
+  useEffect(() => {
+    if (sellerCache) return;
+    if (!sellerPromise) sellerPromise = listSellers().catch(() => ({ affiliates: [], staff: [] }));
+    let alive = true;
+    sellerPromise.then((data) => {
+      sellerCache = data;
+      if (alive) setSellers(data);
+    });
+    return () => { alive = false; };
+  }, []);
+  return sellers || { affiliates: [], staff: [] };
+}
+
+// Lets a name be picked from the list or typed in free-hand, because there
+// is always a walk-in helper or a new referrer who isn't on any list yet.
+function SellerPicker({ value, type, onChange, label = "Sold by — kis ke through", compact }) {
+  const sellers = useSellers();
+  const [custom, setCustom] = useState(false);
+
+  const known = [
+    ...sellers.staff.map((n) => ({ name: n, kind: "Staff" })),
+    ...sellers.affiliates.map((a) => ({ name: a.name, kind: "Affiliate" })),
+  ];
+  const isKnown = !value || known.some((k) => k.name === value);
+
+  useEffect(() => { if (value && !isKnown) setCustom(true); }, [value, isKnown]);
+
+  const pick = (name) => {
+    if (name === "__other__") { setCustom(true); onChange("", "Other"); return; }
+    const match = known.find((k) => k.name === name);
+    onChange(name, match ? match.kind : "Other");
+  };
+
+  return (
+    <div>
+      {label && <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>{label}</label>}
+      {custom ? (
+        <div style={{ display: "flex", gap: 6 }}>
+          <input
+            className="mn-input" value={value || ""} placeholder="Naam likhein"
+            onChange={(e) => onChange(e.target.value, type || "Other")}
+          />
+          <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => { setCustom(false); onChange("", ""); }}>
+            List
+          </button>
+        </div>
+      ) : (
+        <select className="mn-input" value={value || ""} onChange={(e) => pick(e.target.value)}>
+          <option value="">— chunein —</option>
+          {sellers.staff.length > 0 && (
+            <optgroup label="Apne log">
+              {sellers.staff.map((n) => <option key={`s-${n}`} value={n}>{n}</option>)}
+            </optgroup>
+          )}
+          {sellers.affiliates.length > 0 && (
+            <optgroup label="Affiliates">
+              {sellers.affiliates.map((a) => <option key={`a-${a.id}`} value={a.name}>{a.name}</option>)}
+            </optgroup>
+          )}
+          <option value="__other__">+ Koi aur (naam likhein)</option>
+        </select>
+      )}
+      {!compact && value && (
+        <div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 3 }}>
+          {type === "Affiliate" ? "Affiliate sale — commission isi ke khate mein" : type === "Staff" ? "Apne staff ki sale" : "List se bahar"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Backup & restore.
+//
+// Everything this shop has lives in one database on one hosting account.
+// This panel makes that survivable: one click pulls the whole thing down
+// as a file the owner keeps, and the same file puts it all back.
+// =====================================================================
+const kb = (bytes) => {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const saveFile = (text, filename, type = "application/json") => {
+  const blob = new Blob([text], { type: `${type};charset=utf-8;` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// Turns any array of rows into a CSV, quoting whatever needs quoting.
+const toCsv = (rows) => {
+  if (!rows || rows.length === 0) return "";
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const cell = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    // A base64 photo in a spreadsheet cell helps nobody.
+    if (s.startsWith("data:image")) return "(photo)";
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.join(","), ...rows.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
+};
+
+function BackupPanel({ notify }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [confirmText, setConfirmText] = useState("");
+
+  useEffect(() => { backupStatus().then(setStatus).catch(() => {}); }, []);
+
+  const stamp = todayISO();
+
+  const take = async (includeImages) => {
+    setBusy(includeImages ? "full" : "light");
+    try {
+      const backup = await downloadBackup({ includeImages });
+      saveFile(JSON.stringify(backup), `munshi-backup-${stamp}${includeImages ? "" : "-light"}.json`);
+      notify("Backup download ho gaya — ab isay Drive ya phone mein save karein");
+    } catch (err) {
+      notify(`Backup failed: ${err.message}`);
+    } finally { setBusy(""); }
+  };
+
+  // A spreadsheet pack for reading, not for restoring. Browsers block
+  // rapid-fire downloads, so they're spaced out a little.
+  const takeCsvPack = async () => {
+    setBusy("csv");
+    try {
+      const backup = await downloadBackup({ includeImages: false });
+      const wanted = ["orders", "inventory", "customers", "payments", "expenses", "consignments", "consignment_items", "purchase_orders"];
+      let saved = 0;
+      for (const table of wanted) {
+        const rows = backup.data[table];
+        if (!rows || rows.length === 0) continue;
+        saveFile(toCsv(rows), `munshi-${table}-${stamp}.csv`, "text/csv");
+        saved += 1;
+        await new Promise((r) => setTimeout(r, 350));
+      }
+      notify(`${saved} CSV file download ho gayin`);
+    } catch (err) {
+      notify(`CSV pack failed: ${err.message}`);
+    } finally { setBusy(""); }
+  };
+
+  const pickRestore = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        if (!parsed.munshi_backup) return notify("Ye Munshi ka backup file nahi lag raha");
+        setRestoreFile(parsed);
+      } catch {
+        notify("File parh nahi saka — kya ye wahi JSON file hai?");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const doRestore = async () => {
+    if (confirmText !== "RESTORE") return notify('Confirm karne ke liye RESTORE likhein');
+    setBusy("restore");
+    try {
+      const res = await restoreBackup(restoreFile);
+      const total = Object.values(res.restored || {}).reduce((t, c) => t + c, 0);
+      notify(`${total} record restore ho gaye — page refresh karein`);
+      setRestoreFile(null);
+      setConfirmText("");
+    } catch (err) {
+      notify(`Restore failed: ${err.message}`);
+    } finally { setBusy(""); }
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title="Backup" />
+
+      {status ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textDim, marginBottom: 14 }}>
+          Database mein abhi <b style={{ color: COLORS.text }}>{status.totalRows}</b> record hain
+          {status.counts.orders ? ` (${status.counts.orders} orders, ${status.counts.inventory || 0} items)` : ""}.
+          Tasveerein <b style={{ color: COLORS.text }}>{kb(status.imageBytes)}</b> ki hain.
+        </div>
+      ) : (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginBottom: 14 }}>Status load ho raha hai...</div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="mn-btn" disabled={Boolean(busy)} onClick={() => take(true)}>
+          <FileText size={13} /> {busy === "full" ? "Ban raha hai..." : "Backup download karein"}
+        </button>
+        <button className="mn-btn-ghost" disabled={Boolean(busy)} onClick={() => take(false)}>
+          {busy === "light" ? "..." : "Chhota backup (bina tasveer)"}
+        </button>
+        <button className="mn-btn-ghost" disabled={Boolean(busy)} onClick={takeCsvPack}>
+          {busy === "csv" ? "..." : "Excel ke liye CSV"}
+        </button>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10, lineHeight: 1.6 }}>
+        Poore backup mein sab kuch hota hai — orders, inventory, customers, payments, consignments, tasveerein.
+        File download karke <b style={{ color: COLORS.textDim }}>Google Drive ya apne phone</b> mein rakh lein;
+        sirf server par honay se backup ka koi faida nahi.
+        Logins ke passwords is mein nahi jate.
+      </div>
+
+      <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, marginTop: 16, paddingTop: 16 }}>
+        <SectionHeading title="Restore" />
+        <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 10, lineHeight: 1.6 }}>
+          Backup file wapas daalne ke liye. Purana data delete nahi hota — jo record file mein hain woh
+          add ya update ho jate hain, baqi waise ke waise rehte hain.
+        </div>
+
+        <input
+          type="file" accept="application/json,.json"
+          onChange={(e) => pickRestore(e.target.files[0])}
+          style={{ fontSize: 12, color: COLORS.textDim }}
+        />
+
+        {restoreFile && (
+          <div style={{ marginTop: 12, padding: 12, background: COLORS.surface2, border: `1px solid ${COLORS.accent}`, borderRadius: 7 }}>
+            <div style={{ fontSize: 12.5, marginBottom: 8 }}>
+              <b>{String(restoreFile.generated_at).slice(0, 10)}</b> ka backup —{" "}
+              {Object.values(restoreFile.counts || {}).reduce((t, c) => t + c, 0)} record
+              {restoreFile.includes_images === false && " (bina tasveeron ke)"}
+            </div>
+            <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 10 }}>
+              {Object.entries(restoreFile.counts || {}).filter(([, c]) => c > 0).map(([t, c]) => `${t}: ${c}`).join(" · ")}
+            </div>
+            <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>
+              Confirm karne ke liye <b style={{ color: COLORS.accent }}>RESTORE</b> likhein
+            </label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input
+                className="mn-input" style={{ maxWidth: 160 }} value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)} placeholder="RESTORE"
+              />
+              <button className="mn-btn" disabled={busy === "restore" || confirmText !== "RESTORE"} onClick={doRestore}>
+                {busy === "restore" ? "Restore ho raha hai..." : "Restore karein"}
+              </button>
+              <button className="mn-btn-ghost" onClick={() => { setRestoreFile(null); setConfirmText(""); }}>Cancel</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

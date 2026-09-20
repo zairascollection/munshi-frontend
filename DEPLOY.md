@@ -139,3 +139,91 @@ Backend PEHLE. Ulta kiya to thori der tasveerein ghayab rahengi.
 
 Service worker purani copy chala sakta hai. App band kar ke dobara kholein —
 doosri baar naya version aa jayega.
+
+---
+
+# v5 — Stock diya hua + Sold by
+
+## Naya kya hai
+
+**Stock diya hua** (naya tab, sidebar mein "Stock aana / jana" ke neeche)
+- Affiliate ya kisi bhi banday ko maal dein — inventory se khud kam ho jata hai
+- Jitna stock maujood nahi, utna diya hi nahi ja sakta
+- "Hisab" button: kitna wapas aya, kitna bika — wapas aya hua maal khud
+  inventory mein add ho jata hai
+- Kis ke paas kitna maal hai, uski alag list
+
+**Sold by** — har order par
+- POS aur Orders dono mein "Sold by" ka option (staff, affiliate, ya naam likhein)
+- Orders table mein Sold by column + affiliate ka badge
+- Orders ke upar seller filter — "is banday ne kya kya becha"
+- Customer ka phone ab seedha Orders table mein
+- Profit tracker aur monthly sheet mein seller-wise sale
+
+## Deploy — backend PEHLE
+
+Backend ke bagair "Stock diya hua" tab error dega (nayi tables hain).
+
+1. Backend: `src` folder replace → deploy → Deploy Logs mein
+   `Schema migration applied.` check karein
+2. Frontend: `src/` folder replace
+3. Vercel Redeploy, build cache ka tick hata kar
+
+## Pehla istemal
+
+1. **Stock diya hua** → "Stock issue karein" → affiliate chunein, items daalein
+2. Jab woh wapas aaye → us consignment par **Hisab** → wapas aya / bika likhein
+3. Jo bika, us ki sale POS se alag record karein aur **Sold by** mein usi
+   affiliate ka naam chunein — tab profit tracker mein uski sale nazar ayegi
+
+---
+
+# Backup
+
+## Teen layer — teeno lagayein
+
+**1. Railway ka apna backup (sab se ahem, code ki zarurat nahi)**
+
+Railway → apna **Postgres** service (backend nahi) → **Backups** tab →
+on kar dein. Yehi woh cheez hai jo tab kaam aati hai jab poora service
+hi kho jaye. Daily backup set kar dein.
+
+**2. App se download (ye aap ke haath mein rehta hai)**
+
+App → Cost settings → **Backup** → *Backup download karein*.
+File apne phone ya Google Drive mein rakh lein.
+
+Sirf server par backup honay ka koi faida nahi — agar hosting account
+hi chala gaya to backup bhi usi ke sath jayega. Is liye file apne paas
+rakhna zaroori hai.
+
+Teen option hain:
+- **Backup download karein** — sab kuch, tasveeron samet (ye asli backup hai)
+- **Chhota backup** — bina tasveeron ke, WhatsApp par bhejne layak
+- **Excel ke liye CSV** — padhne ke liye, restore ke liye nahi
+
+**3. Hafte-war reminder**
+
+Railway → New → Cron Job:
+```
+GET https://api.zairascollection.com/backup/cron?secret=<ALERTS_CRON_SECRET>
+schedule: 0 4 * * 5
+```
+Har Jumma subah 9 baje WhatsApp par yaad dehani aa jayegi.
+
+## Restore kaise karein
+
+Cost settings → Backup → Restore → file chunein → **RESTORE** likhein →
+Restore karein.
+
+Purana data delete nahi hota. Jo record file mein hain woh add ya update
+ho jate hain, baqi waise ke waise rehte hain — is liye ghalti se chal
+jaye to nuqsan nahi hota.
+
+Ek baat: **passwords backup mein nahi jate.** Restore ke baad Team tab se
+har login ka password dobara set karna hoga.
+
+## Mera mashwara
+
+Mahine mein ek baar download kar ke Drive mein rakh dein. Railway ka
+backup roz chalta rahe. Bas itna kaafi hai.

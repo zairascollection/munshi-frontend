@@ -77,6 +77,7 @@ const FIELD_MAPS = {
     billedBy: "billed_by", returnReason: "return_reason",
     deliveryCharge: "delivery_charge", returnCharge: "return_charge",
     confirmationStatus: "confirmation_status", confirmedAt: "confirmed_at",
+    soldBy: "sold_by", soldByType: "sold_by_type", consignmentId: "consignment_id",
     refundAmount: "refund_amount", returnedAt: "returned_at", deliveredAt: "delivered_at",
   },
   "ad-spend": {},
@@ -262,4 +263,44 @@ export async function removePayment(orderId, paymentId) {
 // --- Undo a return that was marked by mistake ---
 export async function undoReturn(orderId, status) {
   return request(`/orders/${orderId}/undo-return`, { method: "POST", body: { status } });
+}
+
+// --- Consignments (affiliate ko diya hua stock) ---
+export async function listConsignments() {
+  return request("/consignments");
+}
+export async function getConsignment(id) {
+  return request(`/consignments/${id}`);
+}
+export async function createConsignment(payload) {
+  return request("/consignments", { method: "POST", body: payload });
+}
+export async function settleConsignment(id, lines) {
+  return request(`/consignments/${id}/settle`, { method: "POST", body: { lines } });
+}
+export async function removeConsignment(id) {
+  return request(`/consignments/${id}`, { method: "DELETE" });
+}
+// Names only — safe for staff, unlike the full /affiliates list.
+export async function listSellers() {
+  return request("/consignments/sellers");
+}
+export async function holderSummary(name) {
+  return request(`/consignments/holder/${encodeURIComponent(name)}/summary`);
+}
+
+// --- Backup & restore ---
+export async function backupStatus() {
+  return request("/backup/status");
+}
+// Not using request(): this one is a file download, not JSON we parse.
+export async function downloadBackup({ includeImages = true } = {}) {
+  const res = await fetch(`${BASE_URL}/backup/export${includeImages ? "" : "?images=0"}`, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+  if (!res.ok) throw new Error(`Backup failed (${res.status})`);
+  return res.json();
+}
+export async function restoreBackup(backup) {
+  return request("/backup/restore", { method: "POST", body: { backup, confirm: "RESTORE" } });
 }
