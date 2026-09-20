@@ -3758,19 +3758,15 @@ function Consignments({ inventory, affiliates, orders, notify, role, reload }) {
     } catch (err) { notify(`Delete failed: ${err.message}`); }
   };
 
-  if (!rows) return <EmptyRow text="Load ho raha hai..." />;
-
-  const filtered = rows.filter((c) =>
-    `${c.ref_no || ""} ${c.holder || ""} ${c.phone || ""}`.toLowerCase().includes(q.toLowerCase())
-  );
-  const open = rows.filter((c) => c.status !== "Settled");
-  const outValue = rows.reduce((t, c) => t + Number(c.value_out || 0), 0);
-  const outUnits = rows.reduce((t, c) => t + Number(c.remaining || 0), 0);
-
   // Who is holding the most right now — the person to chase first.
+  //
+  // This has to sit ABOVE the loading return. React counts hooks per
+  // render, so a useMemo below an early return runs on some renders and
+  // not others, and the whole app white-screens the moment the data
+  // arrives. Hence the null guard inside rather than around it.
   const byHolder = useMemo(() => {
     const map = {};
-    rows.forEach((c) => {
+    (rows || []).forEach((c) => {
       const k = c.holder || "—";
       if (!map[k]) map[k] = { holder: k, units: 0, value: 0, open: 0 };
       map[k].units += Number(c.remaining || 0);
@@ -3779,6 +3775,15 @@ function Consignments({ inventory, affiliates, orders, notify, role, reload }) {
     });
     return Object.values(map).filter((x) => x.units > 0).sort((a, b) => b.value - a.value);
   }, [rows]);
+
+  if (!rows) return <EmptyRow text="Load ho raha hai..." />;
+
+  const filtered = rows.filter((c) =>
+    `${c.ref_no || ""} ${c.holder || ""} ${c.phone || ""}`.toLowerCase().includes(q.toLowerCase())
+  );
+  const open = rows.filter((c) => c.status !== "Settled");
+  const outValue = rows.reduce((t, c) => t + Number(c.value_out || 0), 0);
+  const outUnits = rows.reduce((t, c) => t + Number(c.remaining || 0), 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
