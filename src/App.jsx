@@ -3890,11 +3890,11 @@ function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
   const [phone, setPhone] = useState("");
   const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState("");
-  const [items, setItems] = useState([{ key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null }]);
+  const [items, setItems] = useState([{ key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null, image: null }]);
   const [saving, setSaving] = useState(false);
 
   const setItem = (key, patch) => setItems((l) => l.map((it) => (it.key === key ? { ...it, ...patch } : it)));
-  const addRow = () => setItems((l) => [...l, { key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null }]);
+  const addRow = () => setItems((l) => [...l, { key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitPrice: 0, unitCost: 0, stock: null, image: null }]);
   const removeRow = (key) => setItems((l) => (l.length > 1 ? l.filter((it) => it.key !== key) : l));
 
   const pick = (key, id) => {
@@ -3904,8 +3904,11 @@ function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
           inventoryId: id, name: inv.name, sku: inv.sku || "",
           unitPrice: Number(inv.price) || 0, unitCost: Number(inv.cost) || 0,
           stock: Number(inv.quantity) || 0,
+          // Photo travels with the row so the person packing the bag can
+          // check by sight that the right thing is going out.
+          image: inv.image || inv.imageUrl || null,
         }
-      : { inventoryId: "", name: "", sku: "", stock: null });
+      : { inventoryId: "", name: "", sku: "", stock: null, image: null });
   };
 
   const totalUnits = items.reduce((t, it) => t + (Number(it.qty) || 0), 0);
@@ -3964,12 +3967,13 @@ function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th>Item</th><th>Stock</th><th>Kitne diye</th><th>Rate</th><th>Value</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Item</th><th>Stock</th><th>Kitne diye</th><th>Rate</th><th>Value</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => {
             const over = it.stock !== null && Number(it.qty) > it.stock;
             return (
               <tr key={it.key}>
+                <td><Thumb url={it.image} size={46} /></td>
                 <td style={{ minWidth: 200 }}>
                   <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
                     <option value="">— item chunein —</option>
@@ -4084,12 +4088,16 @@ function SettleConsignment({ id, onCancel, onDone, notify }) {
 
       <div className="mn-tablewrap"><table className="mn-table">
         <thead><tr>
-          <th>Item</th><th>Diya</th><th>Pehle wapas</th><th>Pehle becha</th><th>Abhi paas hai</th>
+          <th></th><th>Item</th><th>Diya</th><th>Pehle wapas</th><th>Pehle becha</th><th>Abhi paas hai</th>
           <th>Ab wapas aya</th><th>Ab bika</th>
         </tr></thead>
         <tbody>
           {c.items.map((it) => (
             <tr key={it.id}>
+              {/* image_url comes straight from the API — the server joins
+                  the photo on from inventory, so a settled item still shows
+                  its picture even years later. */}
+              <td><Thumb url={it.image_url} size={52} /></td>
               <td>{it.name}{it.sku && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{it.sku}</div>}</td>
               <td className="mn-num">{it.qty_out}</td>
               <td className="mn-num" style={{ color: COLORS.textDim }}>{it.qty_returned || "—"}</td>
