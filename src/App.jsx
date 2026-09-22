@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, Fragment, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment, lazy, Suspense } from "react";
 import {
   LayoutGrid, Boxes, Truck, Users, Wallet, Share2, Plus, Trash2,
   TrendingUp, TrendingDown, AlertTriangle, Search, X, ChevronRight,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import Login from "./Login";
 import { COLORS, CHART_COLORS, fmt } from "./theme";
+import { initialFormValues, diffForSync, createPayload, REMOVE_FILE, isTempId } from "./sync";
 
 // recharts is loaded on demand — only the two screens that draw charts pay
 // for it, and the rest of the app starts without waiting on 150 KB.
@@ -124,6 +125,8 @@ export default function App() {
   const [changingPw, setChangingPw] = useState(false);
   const isMobile = useIsMobile();
   const [navOpen, setNavOpen] = useState(false);
+  // Queue of list changes waiting to be pushed to the server — see update().
+  const pendingSync = useRef([]);
 
   const notify = (msg) => {
     setToast(msg);
@@ -188,14 +191,25 @@ export default function App() {
   // uses (add/edit/delete via array ops), then push whatever changed to the
   // API in the background. Keeps every downstream component's code exactly
   // as it was in the window.storage version — only this function changed.
+  // The server calls happen OUTSIDE the state updater. React may run an
+  // updater more than once for a single change, and doing the saving in
+  // there meant a double-click could fire two creates or two deletes.
   const update = (key, fn) => {
     setData((d) => {
       const oldList = d[key] || [];
       const newList = fn(oldList);
-      reconcile(key, oldList, newList);
+      pendingSync.current.push({ key, oldList, newList });
       return { ...d, [key]: newList };
     });
   };
+
+  // Drains whatever the last render queued, once, after it has committed.
+  useEffect(() => {
+    if (pendingSync.current.length === 0) return;
+    const queued = pendingSync.current;
+    pendingSync.current = [];
+    queued.forEach(({ key, oldList, newList }) => reconcile(key, oldList, newList));
+  });
 
   const reconcile = (key, oldList, newList) => {
     const oldIds = new Set(oldList.map((x) => x.id));
@@ -203,34 +217,40 @@ export default function App() {
 
     oldList.forEach((item) => {
       if (!newIds.has(item.id)) {
-        api.remove(key, item.id).catch((err) => notify(`Couldn't delete: ${err.message}`));
+        // A row whose create never succeeded only exists on screen, so
+        // there is nothing on the server to delete.
+        if (isTempId(item.id)) return;
+        api.remove(key, item.id).catch((err) => {
+          notify(`Delete nahi hua: ${err.message}`);
+          // Put it back rather than leaving the screen showing something
+          // that still exists on the server.
+          setData((d) => ({ ...d, [key]: [...(d[key] || []), item] }));
+        });
       }
     });
 
     newList.forEach((item) => {
       if (!oldIds.has(item.id)) {
         const tempId = item.id;
-        api.create(key, item)
+        api.create(key, createPayload(item))
           .then((created) => {
             setData((d) => ({
               ...d,
               [key]: d[key].map((x) => (x.id === tempId ? { ...x, ...created } : x)),
             }));
           })
-          .catch((err) => notify(`Couldn't save: ${err.message}`));
+          .catch((err) => {
+            notify(`Save nahi hua: ${err.message}`);
+            // Take the row back off the screen. Leaving it there is worse
+            // than losing it: the shopkeeper thinks it is saved, and every
+            // later edit or delete silently does nothing.
+            setData((d) => ({ ...d, [key]: (d[key] || []).filter((x) => x.id !== tempId) }));
+          });
       } else {
         const before = oldList.find((x) => x.id === item.id);
         if (!before) return;
-        // Compare field by field instead of JSON.stringify. Inventory rows
-        // carry a base64 image string; stringifying the whole list on every
-        // keystroke was making the UI crawl. An untouched field is the same
-        // string reference, so !== costs nothing.
-        const patch = {};
-        Object.keys(item).forEach((k) => {
-          if (before[k] !== item[k]) patch[k] = item[k];
-        });
-        // Only send what changed — no re-uploading a 150 KB photo just
-        // because someone ticked a checkbox.
+        // Only what actually changed goes to the server — see src/sync.js.
+        const patch = diffForSync(before, item);
         if (Object.keys(patch).length > 0) {
           api.update(key, item.id, patch).catch((err) => notify(`Couldn't update: ${err.message}`));
         }
@@ -705,9 +725,7 @@ function LogoMark({ size = 36 }) {
 }
 
 function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
-  const [vals, setVals] = useState(() =>
-    Object.fromEntries(fields.map((f) => [f.key, initialValues?.[f.key] ?? f.default ?? ""]))
-  );
+  const [vals, setVals] = useState(() => initialFormValues(fields, initialValues));
   const set = (k, v) => setVals((s) => ({ ...s, [k]: v }));
   const submit = () => {
     for (const f of fields) {
@@ -769,14 +787,37 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
                 {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
             ) : f.type === "file" ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Thumb url={vals[f.key] || vals.imageUrl} />
-                <input
-                  type="file" accept="image/*"
-                  onChange={(e) => handleImageFile(f.key, e.target.files[0])}
-                  style={{ fontSize: 11, color: COLORS.textDim, maxWidth: 130 }}
-                />
-              </div>
+              (() => {
+                const removed = vals[f.key] === REMOVE_FILE;
+                const preview = removed ? null : (vals[f.key] || initialValues?.image || initialValues?.imageUrl);
+                const hasPhoto = Boolean(preview);
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Thumb url={preview} size={44} />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <input
+                        type="file" accept="image/*"
+                        onChange={(e) => handleImageFile(f.key, e.target.files[0])}
+                        style={{ fontSize: 11, color: COLORS.textDim, maxWidth: 130 }}
+                      />
+                      {hasPhoto && (
+                        <button
+                          type="button"
+                          onClick={() => set(f.key, REMOVE_FILE)}
+                          style={{ background: "none", border: "none", color: COLORS.negative, cursor: "pointer", fontSize: 11, padding: 0, textAlign: "left", fontFamily: "inherit" }}
+                        >
+                          Tasveer hatayein
+                        </button>
+                      )}
+                      {removed && (
+                        <span style={{ fontSize: 10.5, color: COLORS.textFaint }}>
+                          Save karne par tasveer hat jayegi
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
             ) : (
               <input
                 className="mn-input"
