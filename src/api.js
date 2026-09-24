@@ -155,8 +155,20 @@ export async function syncWooCommerce(days) {
 export async function sendLowStockAlert() {
   return request("/alerts/low-stock", { method: "POST" });
 }
-export async function getAuditLog(resource) {
-  return request(`/audit-log${resource ? `?resource=${encodeURIComponent(resource)}` : ""}`);
+// The history feed. `action` is "added" | "deleted" | "edited"; `changedBy`
+// matches a person's name. All three filters are optional and combine.
+export async function getAuditLog({ resource, changedBy, action } = {}) {
+  const qs = new URLSearchParams();
+  if (resource) qs.set("resource", resource);
+  if (changedBy) qs.set("changedBy", changedBy);
+  if (action) qs.set("action", action);
+  const suffix = qs.toString();
+  return request(`/audit-log${suffix ? `?${suffix}` : ""}`);
+}
+
+// Distinct names that appear in the history, for the "Changed by" filter.
+export async function getAuditPeople() {
+  return request("/audit-log/people");
 }
 
 // --- Returns ---

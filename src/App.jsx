@@ -29,7 +29,7 @@ function ChartFallback() {
 }
 import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
-  changePassword, sendLowStockAlert, getAuditLog,
+  changePassword, sendLowStockAlert, getAuditLog, getAuditPeople,
   returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
   listCustomers, customerRisk, saveCustomer,
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
@@ -90,6 +90,10 @@ const NAV_SECTIONS = [
 ];
 
 
+// Mirrors the server: managers can delete too, and every delete is written
+// to the change history under their name.
+const canDelete = (role) => role === "owner" || role === "manager";
+
 const accountName = (accounts, id) => ((accounts || []).find((a) => a.id === id) || {}).name || "—";
 
 // Phone/tablet detection. The whole app was built desktop-first, so
@@ -128,9 +132,15 @@ export default function App() {
   // Queue of list changes waiting to be pushed to the server — see update().
   const pendingSync = useRef([]);
 
+  // Failure messages stay up much longer than confirmations. A "save nahi
+  // hua" that disappears in two seconds is worse than no message at all —
+  // the item looks saved and is gone after the next refresh.
+  const toastTimer = useRef(null);
   const notify = (msg) => {
+    const isError = /nahi|fail|error|nhi|couldn't|khali|maujood|qabool/i.test(String(msg || ""));
     setToast(msg);
-    setTimeout(() => setToast(null), 2200);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), isError ? 8000 : 2200);
   };
 
   // Restore session from a saved token on page load.
@@ -420,7 +430,10 @@ export default function App() {
       {changingPw && <ChangePasswordForm onClose={() => setChangingPw(false)} notify={notify} />}
 
       {toast && (
-        <div style={{ position: "absolute", bottom: 20, right: 20, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: "10px 16px", borderRadius: 8, fontSize: 13 }}>
+        <div
+          onClick={() => setToast(null)} title="Band karein"
+          style={{ position: "absolute", bottom: 20, right: 20, maxWidth: 340, cursor: "pointer", background: COLORS.surface2, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: "10px 16px", borderRadius: 8, fontSize: 13, zIndex: 60 }}
+        >
           {toast}
         </div>
       )}
@@ -767,7 +780,12 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
         {fields.map((f) => (
           <div key={f.key}>
             <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>{f.label}</label>
-            {f.type === "seller" ? (
+            {f.type === "combo" ? (
+              <ComboField
+                value={vals[f.key]} options={f.options} placeholder={f.placeholder}
+                onChange={(v) => set(f.key, v)}
+              />
+            ) : f.type === "seller" ? (
               <SellerPicker
                 label={null} compact
                 value={vals[f.key]} type={vals[f.typeKey || "soldByType"]}
@@ -839,6 +857,58 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
   );
 }
 
+// Pick from what already exists, or press + to type a new one.
+//
+// Typing a category by hand every time produced "Winter", "winter" and
+// "Winer" as three separate categories, which then split the reports. The
+// list is built from what is actually in the data, so it stays correct
+// without anyone maintaining it.
+// Seed list for a brand-new shop with nothing in stock yet. Once items
+// exist, their own categories are merged in and this stops mattering.
+const DEFAULT_CATEGORIES = ["Unstitched", "Stitched", "Best Sellers", "New Arrivals", "Summer", "Winter", "Sale"];
+
+function ComboField({ value, options, onChange, placeholder }) {
+  const known = [...new Set((options || []).filter(Boolean).map((o) => String(o).trim()))]
+    .sort((a, b) => a.localeCompare(b));
+  // A value that is not in the list means it was just typed — stay in
+  // typing mode so it is not silently dropped.
+  const [creating, setCreating] = useState(Boolean(value) && !known.includes(value));
+
+  if (creating) {
+    return (
+      <div style={{ display: "flex", gap: 6 }}>
+        <input
+          className="mn-input" autoFocus value={value || ""} placeholder={placeholder || "Naya naam"}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button" className="mn-btn-ghost" title="List se chunein"
+          style={{ padding: "4px 8px", fontSize: 11 }}
+          onClick={() => { setCreating(false); onChange(""); }}
+        >
+          List
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 6 }}>
+      <select className="mn-input" value={value || ""} onChange={(e) => onChange(e.target.value)}>
+        <option value="">— chunein —</option>
+        {known.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+      <button
+        type="button" className="mn-btn-ghost" title="Nayi bana'ein"
+        style={{ padding: "4px 10px", fontSize: 15, lineHeight: 1 }}
+        onClick={() => { setCreating(true); onChange(""); }}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function Thumb({ url, size = 34 }) {
   const [broken, setBroken] = useState(false);
   // url is either a freshly-picked "data:..." string or a relative
@@ -888,15 +958,32 @@ function Inventory({ items, update, notify, role }) {
     }));
   }, [filtered]);
 
+  // Category and group lists are built from what is already in the stock,
+  // so the shopkeeper picks an existing one instead of retyping it (and
+  // "Summer" / "summer " never become two categories). The + button on the
+  // field is there for a genuinely new one.
+  const categoryOptions = useMemo(
+    () => [...new Set([...DEFAULT_CATEGORIES, ...items.map((i) => (i.category || "").trim())])].filter(Boolean),
+    [items]
+  );
+  const groupOptions = useMemo(
+    () => [...new Set(items.map((i) => (i.parentName || "").trim()))].filter(Boolean),
+    [items]
+  );
+  const colorOptions = useMemo(
+    () => [...new Set(items.map((i) => (i.color || "").trim()))].filter(Boolean),
+    [items]
+  );
+
   const baseFields = [
     { key: "name", label: "Item name", required: true },
     { key: "sku", label: "SKU", required: true },
     // Variants: each size/colour is its own row with its own stock and
     // cost, but rows sharing a Design name are grouped together below.
-    { key: "parentName", label: "Design / group name" },
+    { key: "parentName", label: "Design / group name", type: "combo", options: groupOptions, placeholder: "Naya design naam" },
     { key: "size", label: "Size", type: "select", options: ["", "XS", "S", "M", "L", "XL", "XXL", "Free size", "Unstitched"] },
-    { key: "color", label: "Colour" },
-    { key: "category", label: "Category", type: "select", options: ["Unstitched", "Stitched", "Best Sellers", "New Arrivals", "Summer", "Winter", "Sale"] },
+    { key: "color", label: "Colour", type: "combo", options: colorOptions, placeholder: "Naya rang" },
+    { key: "category", label: "Category", type: "combo", options: categoryOptions, placeholder: "Nayi category" },
     { key: "image", label: "Photo (optional)", type: "file" },
     { key: "quantity", label: "Quantity", type: "number", default: 0 },
     { key: "reorder", label: "Reorder level", type: "number", default: 5 },
@@ -931,6 +1018,9 @@ function Inventory({ items, update, notify, role }) {
       )}
       {editingItem && (
         <AddForm
+          // Remount per item, otherwise the form keeps the previous item's
+          // values and the category field keeps its typing/list mode.
+          key={editingId}
           title={`Edit — ${editingItem.name}`} fields={baseFields} initialValues={editingItem} onCancel={() => setEditingId(null)}
           onSave={(v) => {
             update((list) => list.map((x) => x.id === editingId
@@ -994,7 +1084,7 @@ function Inventory({ items, update, notify, role }) {
                     <button onClick={() => setEditingId(i.id)} title="Edit" style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}>
                       <Pencil size={14} />
                     </button>
-                    {isOwner && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== i.id))} />}
+                    {canDelete(role) && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== i.id))} />}
                   </td>
                 </tr>
               );
@@ -1184,7 +1274,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
       )}
       {shown.length === 0 ? <EmptyRow text={dueOnly ? "Kisi customer par udhaar baqi nahi." : "Abhi tak koi order nahi."} /> : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th>{isManagerOrAbove && <th>Cost</th>}{isManagerOrAbove && <th>Profit</th>}<th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Sold by</th><th>Billed by</th><th>Payment</th><th></th>{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th>Amount</th>{isManagerOrAbove && <th>Cost</th>}{isManagerOrAbove && <th>Profit</th>}<th>Courier / Tracking</th><th>Status</th><th>Confirmation</th><th>Sold by</th><th>Billed by</th><th>Payment</th><th></th>{canDelete(role) && <th></th>}</tr></thead>
           <tbody>
             {shown.map((o) => {
               const pStatus = paymentStatusOf(o);
@@ -1240,7 +1330,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                       )}
                     </div>
                   </td>
-                  {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== o.id))} /></td>}
+                  {canDelete(role) && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== o.id))} /></td>}
                 </tr>
               );
             })}
@@ -1487,7 +1577,7 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
       )}
       {employees.length === 0 ? <EmptyRow text="Koi employee add nahi hua." /> : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th></th><th>Name</th><th>Role</th>{isOwner && <th>Salary</th>}<th>Phone</th><th>Joined</th>{isOwner && <th>This month</th>}{isOwner && <th></th>}</tr></thead>
+          <thead><tr><th></th><th>Name</th><th>Role</th>{isOwner && <th>Salary</th>}<th>Phone</th><th>Joined</th>{isOwner && <th>This month</th>}{canDelete(role) && <th></th>}</tr></thead>
           <tbody>
             {employees.map((e) => (
               <tr key={e.id}>
@@ -1509,7 +1599,7 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
                     )}
                   </td>
                 )}
-                {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== e.id))} /></td>}
+                {canDelete(role) && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== e.id))} /></td>}
               </tr>
             ))}
           </tbody>
@@ -1879,50 +1969,116 @@ function CustomerEditor({ customer, onCancel, onSaved, notify }) {
   );
 }
 
+// The history feed carries three kinds of entry, and they read very
+// differently: a field edit (old → new), an "Added" line, and a "Deleted"
+// line holding a summary of what the record contained. The deleted one is
+// the only surviving record that the thing ever existed, so it gets the
+// most visual weight.
+const ACTION_STYLE = {
+  Added: { label: "Added", color: COLORS.positive },
+  Deleted: { label: "Deleted", color: COLORS.negative },
+};
+
 function AuditLogPanel({ notify }) {
   const [entries, setEntries] = useState(null);
+  const [people, setPeople] = useState([]);
   const [resourceFilter, setResourceFilter] = useState("");
+  const [personFilter, setPersonFilter] = useState("");
+  const [actionFilter, setActionFilter] = useState("");
 
-  const load = (resource) => {
-    getAuditLog(resource || undefined)
-      .then(setEntries)
-      .catch((err) => notify(`Couldn't load history: ${err.message}`));
-  };
-  useEffect(() => load(resourceFilter), [resourceFilter]);
+  useEffect(() => {
+    setEntries(null);
+    let cancelled = false;
+    getAuditLog({
+      resource: resourceFilter || undefined,
+      changedBy: personFilter || undefined,
+      action: actionFilter || undefined,
+    })
+      .then((rows) => { if (!cancelled) setEntries(rows); })
+      .catch((err) => { if (!cancelled) notify(`Couldn't load history: ${err.message}`); });
+    return () => { cancelled = true; };
+  }, [resourceFilter, personFilter, actionFilter]);
+
+  // Loaded once — the list of people rarely changes and the filter should
+  // not flicker every time the feed reloads.
+  useEffect(() => { getAuditPeople().then(setPeople).catch(() => {}); }, []);
+
+  const filters = (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <select className="mn-input" style={{ width: 140 }} value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}>
+        <option value="">All records</option>
+        <option value="inventory">Inventory</option>
+        <option value="orders">Bills / orders</option>
+        <option value="employees">Employees</option>
+        <option value="expenses">Expenses</option>
+        <option value="ad_spend">Ad spend</option>
+        <option value="suppliers">Suppliers</option>
+        <option value="affiliates">Affiliates</option>
+        <option value="accounts">Accounts</option>
+        <option value="settings">Cost settings</option>
+      </select>
+      <select className="mn-input" style={{ width: 130 }} value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
+        <option value="">Sab kuch</option>
+        <option value="added">Added only</option>
+        <option value="edited">Edited only</option>
+        <option value="deleted">Deleted only</option>
+      </select>
+      <select className="mn-input" style={{ width: 140 }} value={personFilter} onChange={(e) => setPersonFilter(e.target.value)}>
+        <option value="">Kisi ne bhi</option>
+        {people.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+    </div>
+  );
 
   return (
-    <Panel
-      title="History" count={entries ? `${entries.length} changes` : "Loading..."}
-      extra={
-        <select className="mn-input" style={{ width: 160 }} value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}>
-          <option value="">All records</option>
-          <option value="inventory">Inventory</option>
-          <option value="orders">Orders</option>
-          <option value="employees">Employees</option>
-          <option value="expenses">Expenses</option>
-          <option value="ad_spend">Ad spend</option>
-          <option value="settings">Cost settings</option>
-        </select>
-      }
-    >
+    <Panel title="History" count={entries ? `${entries.length} changes` : "Loading..."} extra={filters}>
       {!entries ? (
         <EmptyRow text="Loading..." />
       ) : entries.length === 0 ? (
-        <EmptyRow text="Abhi tak koi change record nahi hui." />
+        <EmptyRow text="Is filter par koi change record nahi hui." />
       ) : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th>When</th><th>Record</th><th>Field</th><th>Old value</th><th>New value</th><th>Changed by</th></tr></thead>
+          <thead><tr><th>When</th><th>Record</th><th>What</th><th>Old value</th><th>New value</th><th>Changed by</th></tr></thead>
           <tbody>
-            {entries.map((e) => (
-              <tr key={e.id}>
-                <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(e.changed_at).slice(0, 16).replace("T", " ")}</td>
-                <td>{e.record_label || e.record_id.slice(0, 8)}</td>
-                <td style={{ color: COLORS.textDim }}>{e.field}</td>
-                <td className="mn-num" style={{ color: COLORS.negative }}>{e.old_value || "—"}</td>
-                <td className="mn-num" style={{ color: COLORS.positive }}>{e.new_value || "—"}</td>
-                <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.changed_by}</td>
-              </tr>
-            ))}
+            {entries.map((e) => {
+              const action = ACTION_STYLE[e.field];
+              return (
+                <tr key={e.id}>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12, whiteSpace: "nowrap" }}>
+                    {String(e.changed_at).slice(0, 16).replace("T", " ")}
+                  </td>
+                  <td>
+                    {/* The photo makes an inventory line recognisable at a
+                        glance — far faster than decoding a SKU. */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {e.resource === "inventory" && <Thumb url={e.image_url} size={30} />}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {e.record_label || String(e.record_id || "").slice(0, 8)}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{e.resource}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{ color: action ? action.color : COLORS.textDim, fontWeight: action ? 600 : 400 }}>
+                    {action ? action.label : e.field}
+                  </td>
+                  {action ? (
+                    // Added / Deleted have no before-and-after; the summary of
+                    // what the record held spans both value columns.
+                    <td colSpan={2} style={{ fontSize: 12, color: COLORS.textDim }}>
+                      {e.new_value || e.old_value || "—"}
+                    </td>
+                  ) : (
+                    <>
+                      <td className="mn-num" style={{ color: COLORS.negative }}>{e.old_value || "—"}</td>
+                      <td className="mn-num" style={{ color: COLORS.positive }}>{e.new_value || "—"}</td>
+                    </>
+                  )}
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.changed_by}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table></div>
       )}
@@ -1953,8 +2109,9 @@ function ReceiptView({ receipt, onNew }) {
         <div style={{ fontSize: 12, marginBottom: 10 }}>Customer: {receipt.customer}{receipt.phone ? ` · ${receipt.phone}` : ""}</div>
         <div style={{ borderTop: `1px dashed ${COLORS.border}`, borderBottom: `1px dashed ${COLORS.border}`, padding: "10px 0", margin: "10px 0" }}>
           {receipt.items.map((it) => (
-            <div key={it.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
-              <span>{it.name} ×{it.qty}</span>
+            <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8 }}>
+              <Thumb url={it.image} size={34} />
+              <span style={{ flex: 1 }}>{it.name} ×{it.qty}</span>
               <span className="mn-num">{fmt(it.price * it.qty)}</span>
             </div>
           ))}
@@ -2006,7 +2163,13 @@ function POS({ data, update, notify, user, role }) {
     setCart((c) => {
       const found = c.find((x) => x.id === item.id);
       if (found) return c.map((x) => (x.id === item.id ? { ...x, qty: x.qty + 1 } : x));
-      return [...c, { id: item.id, name: item.name, price: Number(item.price), cost: Number(item.cost), qty: 1 }];
+      return [...c, {
+        id: item.id, name: item.name,
+        price: Number(item.price), cost: Number(item.cost), qty: 1,
+        // Carried through to the printed bill — a customer checking their
+        // receipt recognises the picture faster than the item name.
+        image: item.image || item.imageUrl || null,
+      }];
     });
   };
   const handleScan = (e) => {
@@ -3099,7 +3262,7 @@ function AdSpend({ rows, update, notify, role }) {
         )}
         {rows.length === 0 ? <EmptyRow text="Ad spend add karein taake asli ROAS pata chale." /> : (
           <div className="mn-tablewrap"><table className="mn-table">
-            <thead><tr><th>Date</th><th>Channel</th><th>Campaign</th><th>Amount</th><th>Notes</th>{isOwner && <th></th>}</tr></thead>
+            <thead><tr><th>Date</th><th>Channel</th><th>Campaign</th><th>Amount</th><th>Notes</th>{canDelete(role) && <th></th>}</tr></thead>
             <tbody>
               {[...rows].sort((a, b) => String(b.date).localeCompare(String(a.date))).map((r) => (
                 <tr key={r.id}>
@@ -3108,7 +3271,7 @@ function AdSpend({ rows, update, notify, role }) {
                   <td style={{ color: COLORS.textDim }}>{r.campaign || "—"}</td>
                   <td className="mn-num">{fmt(r.amount)}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{r.notes || "—"}</td>
-                  {isOwner && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== r.id))} /></td>}
+                  {canDelete(role) && <td><DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== r.id))} /></td>}
                 </tr>
               ))}
             </tbody>
@@ -3275,7 +3438,7 @@ function Suppliers({ suppliers, update, notify, role }) {
                 <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{sp.notes || "—"}</td>
                 <td style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                   <button onClick={() => setEditingId(sp.id)} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", padding: 2 }}><Pencil size={14} /></button>
-                  {isOwner && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== sp.id))} />}
+                  {canDelete(role) && <DeleteBtn onClick={() => update((list) => list.filter((x) => x.id !== sp.id))} />}
                 </td>
               </tr>
             ))}
@@ -3352,7 +3515,7 @@ function Purchases({ suppliers, inventory, notify, role, reload }) {
                           <Check size={11} /> Receive
                         </button>
                       )}
-                      {isOwner && <DeleteBtn onClick={async () => { await removePurchase(po.id); load(); }} />}
+                      {canDelete(role) && <DeleteBtn onClick={async () => { await removePurchase(po.id); load(); }} />}
                     </div>
                   </td>
                 </tr>
@@ -3888,7 +4051,7 @@ function Consignments({ inventory, affiliates, orders, notify, role, reload }) {
                         </button>
                       )}
                       <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setSettling(c.id)}>Items</button>
-                      {isOwner && <DeleteBtn onClick={() => del(c)} />}
+                      {canDelete(role) && <DeleteBtn onClick={() => del(c)} />}
                     </div>
                   </td>
                 </tr>
