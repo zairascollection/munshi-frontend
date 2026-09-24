@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-24b";
+const APP_BUILD = "2026-09-24c";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -76,11 +76,11 @@ const NAV = [
   { id: "purchases", label: "Purchases", icon: PackagePlus, ownerOnly: true, managerOk: true },
   { id: "suppliers", label: "Suppliers", icon: Factory, ownerOnly: true, managerOk: true },
   { id: "finance", label: "Finance", icon: Wallet, ownerOnly: true, managerOk: true },
-  { id: "accounts", label: "Accounts", icon: Landmark, ownerOnly: true },
+  { id: "accounts", label: "Accounts", icon: Landmark, ownerOnly: true, managerOk: true },
   { id: "expenses", label: "Expenses", icon: TrendingDown, ownerOnly: true, managerOk: true },
   { id: "affiliates", label: "Affiliates", icon: Share2, ownerOnly: true, managerOk: true },
   { id: "team", label: "Team", icon: Users, ownerOnly: true },
-  { id: "settings", label: "Cost settings", icon: SettingsIcon, ownerOnly: true },
+  { id: "settings", label: "Cost settings", icon: SettingsIcon, ownerOnly: true, managerOk: true },
   { id: "history", label: "Change history", icon: HistoryIcon, ownerOnly: true },
 ];
 
@@ -117,7 +117,10 @@ function useIsMobile(breakpoint = 820) {
 
 // Resources fetched on login. Owner-only ones are skipped for staff
 // (the backend would 403 them anyway — no point making the calls).
-const OWNER_ONLY_KEYS = new Set(["accounts"]);
+// Nothing is withheld from a manager any more — they run the shop. The
+// safeguard is that every change they make is written to the owner's
+// change history with their name on it, not that screens are hidden.
+const OWNER_ONLY_KEYS = new Set();
 const MANAGER_OK_KEYS = new Set(["expenses", "affiliates", "ad-spend", "suppliers"]);
 const ALL_KEYS = ["inventory", "orders", "employees", "affiliates", "accounts", "expenses", "ad-spend", "suppliers"];
 
@@ -459,11 +462,11 @@ export default function App() {
           {tab === "suppliers" && (role === "owner" || role === "manager") && <Suppliers suppliers={data.suppliers || []} update={(fn) => update("suppliers", fn)} notify={notify} role={role} />}
           {tab === "purchases" && (role === "owner" || role === "manager") && <Purchases suppliers={data.suppliers || []} inventory={data.inventory} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "finance" && (role === "owner" || role === "manager") && <Finance data={data} metrics={metrics} />}
-          {tab === "accounts" && role === "owner" && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
+          {tab === "accounts" && (role === "owner" || role === "manager") && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "expenses" && (role === "owner" || role === "manager") && <Expenses expenses={data.expenses || []} accounts={data.accounts || []} update={(fn) => update("expenses", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "affiliates" && (role === "owner" || role === "manager") && <Affiliates affiliates={data.affiliates} accounts={data.accounts || []} update={(fn) => update("affiliates", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} />}
           {tab === "team" && role === "owner" && <Team notify={notify} currentUserId={user.id} />}
-          {tab === "settings" && role === "owner" && <CostSettings settings={settings} onSaved={setSettings} notify={notify} />}
+          {tab === "settings" && (role === "owner" || role === "manager") && <CostSettings settings={settings} onSaved={setSettings} notify={notify} />}
           {tab === "history" && role === "owner" && <AuditLogPanel notify={notify} />}
         </div>
       </div>
@@ -555,7 +558,7 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
         })}
       </div>
       <div style={{ marginTop: "auto", padding: "12px 10px", borderTop: `1px solid ${COLORS.borderSoft}`, fontSize: 11.5, color: COLORS.textFaint }}>
-        {role === "staff" ? "Staff view — finance & profit hidden." : role === "manager" ? "Manager view — Team aur Accounts band." : "Owner view — full access."} Data saves automatically.
+        {role === "staff" ? "Staff view — finance & profit hidden." : role === "manager" ? "Manager view — sab kuch edit/delete, har change history mein." : "Owner view — full access."} Data saves automatically.
         <BuildInfo role={role} />
       </div>
     </div>
@@ -730,7 +733,7 @@ function Dashboard({ data, metrics, setTab, role, notify }) {
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <SectionHeading title="Low stock alerts" action={() => setTab("inventory")} />
-            {isOwner && metrics.lowStock.length > 0 && (
+            {(role === "owner" || role === "manager") && metrics.lowStock.length > 0 && (
               <button className="mn-btn-ghost" disabled={sendingAlert} onClick={handleSendAlert} style={{ fontSize: 11, padding: "5px 9px" }}>
                 {sendingAlert ? "Sending..." : "Send alert (WhatsApp/SMS)"}
               </button>
@@ -1622,6 +1625,9 @@ function Returns({ orders, notify, role, settings, reload }) {
 function Employees({ employees, accounts, update, updateAccounts, notify, role }) {
   const [adding, setAdding] = useState(false);
   const isOwner = role === "owner";
+  // Salary and the "pay from" action are open to the manager too — the
+  // history records who marked a salary paid and from which account.
+  const canSeePay = role === "owner" || role === "manager";
   const fields = [
     { key: "name", label: "Name", required: true },
     { key: "role", label: "Role" },
@@ -1654,17 +1660,17 @@ function Employees({ employees, accounts, update, updateAccounts, notify, role }
       )}
       {employees.length === 0 ? <EmptyRow text="Koi employee add nahi hua." /> : (
         <div className="mn-tablewrap"><table className="mn-table">
-          <thead><tr><th></th><th>Name</th><th>Role</th>{isOwner && <th>Salary</th>}<th>Phone</th><th>Joined</th>{isOwner && <th>This month</th>}{canDelete(role) && <th></th>}</tr></thead>
+          <thead><tr><th></th><th>Name</th><th>Role</th>{canSeePay && <th>Salary</th>}<th>Phone</th><th>Joined</th>{canSeePay && <th>This month</th>}{canDelete(role) && <th></th>}</tr></thead>
           <tbody>
             {employees.map((e) => (
               <tr key={e.id}>
                 <td><Thumb url={e.image} /></td>
                 <td>{e.name}</td>
                 <td style={{ color: COLORS.textDim }}>{e.role}</td>
-                {isOwner && <td className="mn-num">{fmt(e.salary)}</td>}
+                {canSeePay && <td className="mn-num">{fmt(e.salary)}</td>}
                 <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.phone}</td>
                 <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.joined}</td>
-                {isOwner && (
+                {canSeePay && (
                   <td>
                     {e.status === "Paid" ? (
                       <button onClick={() => markPending(e)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}><Badge text="Paid" tone="positive" /></button>
