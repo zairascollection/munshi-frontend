@@ -382,6 +382,27 @@ export default function App() {
           .mn-btn, .mn-btn-ghost { padding: 9px 12px; }
           .mn-input { font-size: 16px; } /* stops iOS zooming in on focus */
         }
+
+        /* Printing used to send the whole app to the printer — sidebar,
+           navigation and buttons around a small slip. Only the receipt
+           prints now, on white paper, with the photos kept. */
+        @media print {
+          body * { visibility: hidden; }
+          .mn-receipt, .mn-receipt * { visibility: visible; }
+          .mn-receipt {
+            position: absolute; left: 0; top: 0; width: 100%;
+            max-width: none !important;
+          }
+          /* The on-screen slip is light text on a dark card. Inline styles
+             set those colours per element, so they have to be overridden
+             one by one or the bill prints white-on-white. */
+          .mn-receipt, .mn-receipt * { color: #000 !important; }
+          .mn-receipt > div {
+            background: #fff !important; border: none !important; padding: 0 !important;
+          }
+          .mn-receipt img { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .mn-noprint { display: none !important; }
+        }
       `}</style>
 
       {isMobile ? (
@@ -909,7 +930,7 @@ function ComboField({ value, options, onChange, placeholder }) {
   );
 }
 
-function Thumb({ url, size = 34 }) {
+function Thumb({ url, size = 34, eager = false }) {
   const [broken, setBroken] = useState(false);
   // url is either a freshly-picked "data:..." string or a relative
   // "/inventory/<id>/image?v=..." path served by the API host.
@@ -918,7 +939,9 @@ function Thumb({ url, size = 34 }) {
   return (
     <div style={{ width: size, height: size, borderRadius: 6, overflow: "hidden", background: COLORS.surface2, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
       {src && !broken ? (
-        <img src={src} onError={() => setBroken(true)} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        // A lazy image that has not loaded yet prints as a blank box, so
+        // anything on the bill is loaded eagerly.
+        <img src={src} onError={() => setBroken(true)} loading={eager ? "eager" : "lazy"} decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
         <ImageIcon size={Math.round(size * 0.4)} color={COLORS.textFaint} />
       )}
@@ -2094,10 +2117,19 @@ function RowLine({ label, value, bold, negative }) {
   );
 }
 
-function ReceiptView({ receipt, onNew }) {
+function ReceiptView({ receipt, onNew, inventory = [] }) {
   const due = Math.max(0, receipt.sell - receipt.amountPaid);
+  // The cart line carries its own photo, but if a bill was built before
+  // photos were added to the cart — or the line came from anywhere else —
+  // fall back to looking the product up in stock by id. Without this the
+  // bill silently shows a grey box and looks like the feature is broken.
+  const photoFor = (it) => {
+    if (it.image) return it.image;
+    const inv = inventory.find((x) => x.id === it.id);
+    return (inv && (inv.image || inv.imageUrl)) || null;
+  };
   return (
-    <div style={{ maxWidth: 380, margin: "0 auto" }}>
+    <div className="mn-receipt" style={{ maxWidth: 380, margin: "0 auto" }}>
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 22 }}>
         <div style={{ textAlign: "center", marginBottom: 14 }}>
           <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 17 }}>Zaira's Collection</div>
@@ -2110,7 +2142,7 @@ function ReceiptView({ receipt, onNew }) {
         <div style={{ borderTop: `1px dashed ${COLORS.border}`, borderBottom: `1px dashed ${COLORS.border}`, padding: "10px 0", margin: "10px 0" }}>
           {receipt.items.map((it) => (
             <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8 }}>
-              <Thumb url={it.image} size={34} />
+              <Thumb url={photoFor(it)} size={34} eager />
               <span style={{ flex: 1 }}>{it.name} ×{it.qty}</span>
               <span className="mn-num">{fmt(it.price * it.qty)}</span>
             </div>
@@ -2130,7 +2162,7 @@ function ReceiptView({ receipt, onNew }) {
         )}
         <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 12, textAlign: "center" }}>Shukriya! Dobara tashreef laayen.</div>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center" }}>
+      <div className="mn-noprint" style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center" }}>
         <button className="mn-btn" onClick={() => window.print()}><Printer size={14} /> Print</button>
         <button className="mn-btn-ghost" onClick={onNew}>New bill</button>
       </div>
@@ -2239,7 +2271,7 @@ function POS({ data, update, notify, user, role }) {
     notify("Bill generated");
   };
 
-  if (receipt) return <ReceiptView receipt={receipt} onNew={() => setReceipt(null)} />;
+  if (receipt) return <ReceiptView receipt={receipt} inventory={data.inventory} onNew={() => setReceipt(null)} />;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, alignItems: "start" }}>
