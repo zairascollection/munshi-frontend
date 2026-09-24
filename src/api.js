@@ -166,6 +166,12 @@ export async function getAuditLog({ resource, changedBy, action } = {}) {
   return request(`/audit-log${suffix ? `?${suffix}` : ""}`);
 }
 
+// Which backend build is actually running. Needs no token — it is there so
+// "the fix isn't working" can be answered with a fact instead of a guess.
+export async function getVersion() {
+  return request("/version");
+}
+
 // Distinct names that appear in the history, for the "Changed by" filter.
 export async function getAuditPeople() {
   return request("/audit-log/people");

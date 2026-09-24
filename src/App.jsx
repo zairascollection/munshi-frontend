@@ -29,7 +29,7 @@ function ChartFallback() {
 }
 import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
-  changePassword, sendLowStockAlert, getAuditLog, getAuditPeople,
+  changePassword, sendLowStockAlert, getAuditLog, getAuditPeople, getVersion,
   returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
   listCustomers, customerRisk, saveCustomer,
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
@@ -55,6 +55,10 @@ const paymentStatusOf = (o) => {
   return "Pending";
 };
 const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid || 0));
+
+// Bump this whenever a build goes out. It is shown in the sidebar so a
+// device running yesterday's app can be spotted in one look.
+const APP_BUILD = "2026-09-24b";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -262,7 +266,23 @@ export default function App() {
         // Only what actually changed goes to the server — see src/sync.js.
         const patch = diffForSync(before, item);
         if (Object.keys(patch).length > 0) {
-          api.update(key, item.id, patch).catch((err) => notify(`Couldn't update: ${err.message}`));
+          api.update(key, item.id, patch)
+            // Trust the server's copy over the screen's: it may have
+            // adjusted or rejected part of the patch.
+            .then((saved) => setData((d) => ({
+              ...d,
+              [key]: (d[key] || []).map((x) => (x.id === item.id ? { ...x, ...saved } : x)),
+            })))
+            .catch((err) => {
+              // Put the old values straight back. Leaving the new ones on
+              // screen is what made a failed save look like a successful
+              // one until the next refresh threw the edit away.
+              setData((d) => ({
+                ...d,
+                [key]: (d[key] || []).map((x) => (x.id === item.id ? before : x)),
+              }));
+              notify(`${before.name || before.title || before.orderNo || "Record"} save nahi hua: ${err.message}`);
+            });
         }
       }
     });
@@ -535,8 +555,32 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
         })}
       </div>
       <div style={{ marginTop: "auto", padding: "12px 10px", borderTop: `1px solid ${COLORS.borderSoft}`, fontSize: 11.5, color: COLORS.textFaint }}>
-        {role === "staff" ? "Staff view — finance & profit hidden." : role === "manager" ? "Manager view — no delete, no Team/Accounts." : "Owner view — full access."} Data saves automatically.
+        {role === "staff" ? "Staff view — finance & profit hidden." : role === "manager" ? "Manager view — Team aur Accounts band." : "Owner view — full access."} Data saves automatically.
+        <BuildInfo role={role} />
       </div>
+    </div>
+  );
+}
+
+// Three facts, small, in the corner: which app build this device is running,
+// which backend it is talking to, and what role the server thinks you are.
+// Every "it's still not working" in this app has so far come down to one of
+// those three being different from what we assumed — now it is readable
+// from the screen instead of guessed at.
+function BuildInfo({ role }) {
+  const [api, setApi] = useState("…");
+  useEffect(() => {
+    let alive = true;
+    getVersion()
+      .then((v) => { if (alive) setApi(v.build || "?"); })
+      .catch(() => { if (alive) setApi("no reply"); });
+    return () => { alive = false; };
+  }, []);
+  return (
+    <div style={{ marginTop: 8, fontSize: 10, lineHeight: 1.5, color: COLORS.textFaint, opacity: 0.75 }}>
+      App {APP_BUILD}<br />
+      Server {api}<br />
+      Role {role}
     </div>
   );
 }
