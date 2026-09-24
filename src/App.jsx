@@ -930,6 +930,16 @@ function ComboField({ value, options, onChange, placeholder }) {
   );
 }
 
+// A cart line carries its own photo, but if it doesn't — an older bill, or
+// a line built somewhere else — fall back to looking the product up in
+// stock by id. Without this the row shows a grey box and it looks like the
+// picture feature is broken.
+function linePhoto(line, inventory = []) {
+  if (line.image) return line.image;
+  const inv = inventory.find((x) => x.id === line.id);
+  return (inv && (inv.image || inv.imageUrl)) || null;
+}
+
 function Thumb({ url, size = 34, eager = false }) {
   const [broken, setBroken] = useState(false);
   // url is either a freshly-picked "data:..." string or a relative
@@ -2119,15 +2129,7 @@ function RowLine({ label, value, bold, negative }) {
 
 function ReceiptView({ receipt, onNew, inventory = [] }) {
   const due = Math.max(0, receipt.sell - receipt.amountPaid);
-  // The cart line carries its own photo, but if a bill was built before
-  // photos were added to the cart — or the line came from anywhere else —
-  // fall back to looking the product up in stock by id. Without this the
-  // bill silently shows a grey box and looks like the feature is broken.
-  const photoFor = (it) => {
-    if (it.image) return it.image;
-    const inv = inventory.find((x) => x.id === it.id);
-    return (inv && (inv.image || inv.imageUrl)) || null;
-  };
+  const photoFor = (it) => linePhoto(it, inventory);
   return (
     <div className="mn-receipt" style={{ maxWidth: 380, margin: "0 auto" }}>
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 22 }}>
@@ -2217,6 +2219,7 @@ function POS({ data, update, notify, user, role }) {
     }
     setScanCode("");
   };
+  const photoOf = (c) => linePhoto(c, data.inventory);
   const changeQty = (id, delta) => {
     setCart((c) => c.map((x) => (x.id === id ? { ...x, qty: Math.max(1, x.qty + delta) } : x)).filter((x) => x.qty > 0));
   };
@@ -2309,6 +2312,9 @@ function POS({ data, update, notify, user, role }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
             {cart.map((c) => (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                {/* Counter par bill banate waqt tasveer se turant pata chal
+                    jata hai ke sahi cheez add hui hai ya nahi. */}
+                <Thumb url={photoOf(c)} size={30} />
                 <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</span>
                 <button onClick={() => changeQty(c.id, -1)} style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 4, width: 20, height: 20, color: COLORS.text, cursor: "pointer" }}><Minus size={11} /></button>
                 <span className="mn-num" style={{ width: 18, textAlign: "center" }}>{c.qty}</span>
