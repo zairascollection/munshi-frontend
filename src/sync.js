@@ -15,6 +15,11 @@ export const FILE_FIELDS = new Set(["image"]);
 // from "this form never loaded the photo in the first place".
 export const REMOVE_FILE = "__munshi_remove_file__";
 
+// Fields the server computes and sends down with each row. They must
+// never travel back up — there is no column behind them, and an order's
+// resolved `items` would be rejected or, worse, stored.
+export const SERVER_DERIVED = new Set(["imageUrl", "image_url", "items"]);
+
 // null, undefined and "" all mean "nothing here". The form turns a null
 // column into "" for its inputs, and without this they would look like a
 // change on every single save.
@@ -44,8 +49,9 @@ export function diffForSync(before, after) {
   if (!before || !after) return patch;
 
   for (const key of Object.keys(after)) {
-    // Derived by the server from the image itself; never writable.
-    if (key === "imageUrl" || key === "image_url") continue;
+    // Derived by the server, never writable: the photo URL, and the line
+    // items an order's product summary was resolved into.
+    if (SERVER_DERIVED.has(key)) continue;
 
     const value = after[key];
 
@@ -68,7 +74,7 @@ export function diffForSync(before, after) {
 export function createPayload(item) {
   const out = {};
   for (const [k, v] of Object.entries(item)) {
-    if (k === "imageUrl" || k === "image_url") continue;
+    if (SERVER_DERIVED.has(k)) continue;
     if (FILE_FIELDS.has(k)) {
       if (v === REMOVE_FILE || isBlank(v)) continue;
       out[k] = v;

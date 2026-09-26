@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-24c";
+const APP_BUILD = "2026-09-26";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -450,7 +450,7 @@ export default function App() {
           {tab === "dashboard" && <Dashboard data={data} metrics={metrics} setTab={setTab} role={role} notify={notify} />}
           {tab === "pos" && <POS data={data} update={update} notify={notify} user={user} role={role} />}
           {tab === "inventory" && <Inventory items={data.inventory} update={(fn) => update("inventory", fn)} notify={notify} role={role} />}
-          {tab === "orders" && <Orders orders={data.orders} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
+          {tab === "orders" && <Orders orders={data.orders} inventory={data.inventory} accounts={data.accounts || []} update={(fn) => update("orders", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} user={user} settings={settings} reload={() => loadAll(role)} />}
           {tab === "returns" && <Returns orders={data.orders} notify={notify} role={role} settings={settings} reload={() => loadAll(role)} />}
           {tab === "consignments" && <Consignments inventory={data.inventory} affiliates={data.affiliates || []} orders={data.orders} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "customers" && <Customers orders={data.orders} notify={notify} role={role} />}
@@ -987,6 +987,32 @@ function linePhoto(line, inventory = []) {
   return (inv && (inv.image || inv.imageUrl)) || null;
 }
 
+// The product column of a bill. The server matches each line of the
+// order's product summary back to inventory, so even an order placed
+// before photos existed shows its pictures now.
+function OrderProductCell({ order, size = 30 }) {
+  const items = Array.isArray(order.items) ? order.items : [];
+  const withPhotos = items.filter((it) => it.imageUrl);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {withPhotos.length > 0 && (
+        <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+          {/* Three is enough to recognise the parcel; the rest are counted. */}
+          {withPhotos.slice(0, 3).map((it, i) => (
+            <Thumb key={`${it.inventoryId || it.name}-${i}`} url={it.imageUrl} size={size} />
+          ))}
+          {withPhotos.length > 3 && (
+            <span style={{ fontSize: 10.5, color: COLORS.textFaint, alignSelf: "center" }}>+{withPhotos.length - 3}</span>
+          )}
+        </div>
+      )}
+      <span style={{ color: COLORS.textDim, minWidth: 0 }}>
+        {order.product}{order.qty ? ` \u00d7${order.qty}` : ""}
+      </span>
+    </div>
+  );
+}
+
 function Thumb({ url, size = 34, eager = false }) {
   const [broken, setBroken] = useState(false);
   // url is either a freshly-picked "data:..." string or a relative
@@ -1219,11 +1245,12 @@ function PaymentEditor({ order, accounts, onSave, onClose }) {
   );
 }
 
-function Orders({ orders, accounts, update, updateAccounts, notify, role, user, settings, reload }) {
+function Orders({ orders, inventory, accounts, update, updateAccounts, notify, role, user, settings, reload }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [returning, setReturning] = useState(null);
   const [paying, setPaying] = useState(null);
+  const [viewingBill, setViewingBill] = useState(null);
   const [dueOnly, setDueOnly] = useState(false);
   const [sellerFilter, setSellerFilter] = useState("");
   const [sendingBulk, setSendingBulk] = useState(false);
@@ -1297,6 +1324,26 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
     setEditingId(null);
   };
 
+  // Reprinting an old bill. The line items come from the server, which
+  // matched the order's product summary back to stock — so a sale from
+  // months ago prints with its photos. Per-line prices were never stored
+  // on an order, only the total, so the lines show what was sold and the
+  // totals below show the money.
+  if (viewingBill) {
+    const bill = {
+      ...viewingBill,
+      items: (viewingBill.items || []).map((it, i) => ({
+        id: it.inventoryId || `${viewingBill.id}-${i}`,
+        name: it.name,
+        qty: it.qty,
+        image: it.imageUrl,
+      })),
+      subtotal: Number(viewingBill.sell || 0) + Number(viewingBill.discount || 0),
+      discount: 0,
+    };
+    return <ReceiptView receipt={bill} inventory={inventory || []} onNew={() => setViewingBill(null)} backLabel="Wapas" />;
+  }
+
   return (
     <Panel
       title="Orders & parcels" addLabel="Add order" onAdd={() => setAdding(true)}
@@ -1366,7 +1413,7 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                     {o.customer}
                     {o.phone && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{o.phone}</div>}
                   </td>
-                  <td style={{ color: COLORS.textDim }}>{o.product}{o.qty ? ` ×${o.qty}` : ""}</td>
+                  <td><OrderProductCell order={o} /></td>
                   <td className="mn-num">{fmt(o.sell)}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.courier || "—"}{o.tracking ? ` · ${o.tracking}` : ""}</td>
                   <td>
@@ -1398,6 +1445,12 @@ function Orders({ orders, accounts, update, updateAccounts, notify, role, user, 
                   </td>
                   <td>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      {/* Reprint any bill, including ones made before the
+                          photos existed — the lines are rebuilt from the
+                          order and matched back to stock. */}
+                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setViewingBill(o)}>
+                        <Receipt size={12} /> Bill
+                      </button>
                       {o.status !== "Returned" && Number(o.sell || 0) - Number(o.amountPaid || 0) > 0 && (
                         <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px", color: COLORS.accent }} onClick={() => setPaying(o)}>
                           <Wallet size={12} /> Payment
@@ -1566,7 +1619,7 @@ function Returns({ orders, notify, role, settings, reload }) {
                   <td>{o.orderNo}</td>
                   <td>{o.customer}</td>
                   <td style={{ color: COLORS.textDim }}>{o.city || "—"}</td>
-                  <td style={{ color: COLORS.textDim }}>{o.product}</td>
+                  <td><OrderProductCell order={{ ...o, qty: null }} size={26} /></td>
                   <td style={{ fontSize: 12 }}>{o.returnReason || "—"}</td>
                   <td className="mn-num">{fmt(o.refundAmount)}</td>
                   <td className="mn-num">{fmt(o.returnCharge)}</td>
@@ -2177,7 +2230,7 @@ function RowLine({ label, value, bold, negative }) {
   );
 }
 
-function ReceiptView({ receipt, onNew, inventory = [] }) {
+function ReceiptView({ receipt, onNew, inventory = [], backLabel = "New bill" }) {
   const due = Math.max(0, receipt.sell - receipt.amountPaid);
   const photoFor = (it) => linePhoto(it, inventory);
   return (
@@ -2196,7 +2249,9 @@ function ReceiptView({ receipt, onNew, inventory = [] }) {
             <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8 }}>
               <Thumb url={photoFor(it)} size={34} eager />
               <span style={{ flex: 1 }}>{it.name} ×{it.qty}</span>
-              <span className="mn-num">{fmt(it.price * it.qty)}</span>
+              {Number.isFinite(Number(it.price)) && (
+                <span className="mn-num">{fmt(it.price * it.qty)}</span>
+              )}
             </div>
           ))}
         </div>
@@ -2216,7 +2271,7 @@ function ReceiptView({ receipt, onNew, inventory = [] }) {
       </div>
       <div className="mn-noprint" style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center" }}>
         <button className="mn-btn" onClick={() => window.print()}><Printer size={14} /> Print</button>
-        <button className="mn-btn-ghost" onClick={onNew}>New bill</button>
+        <button className="mn-btn-ghost" onClick={onNew}>{backLabel}</button>
       </div>
     </div>
   );
