@@ -166,6 +166,15 @@ export async function getAuditLog({ resource, changedBy, action } = {}) {
   return request(`/audit-log${suffix ? `?${suffix}` : ""}`);
 }
 
+// Corrects which products a bill was for. Old bills recorded only a name,
+// and many dresses here share one, so this is how a bill gets tied to the
+// real product — and therefore the right photo — once and for all.
+// `updateTotals` is off unless asked: fixing a picture must not silently
+// change what the customer was charged.
+export async function setOrderItems(id, items, updateTotals = false) {
+  return request(`/orders/${id}/items`, { method: "PUT", body: { items, updateTotals } });
+}
+
 // Which backend build is actually running. Needs no token — it is there so
 // "the fix isn't working" can be answered with a fact instead of a guess.
 export async function getVersion() {

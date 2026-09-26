@@ -29,7 +29,7 @@ function ChartFallback() {
 }
 import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
-  changePassword, sendLowStockAlert, getAuditLog, getAuditPeople, getVersion,
+  changePassword, sendLowStockAlert, getAuditLog, getAuditPeople, getVersion, setOrderItems,
   returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
   listCustomers, customerRisk, saveCustomer,
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-26b";
+const APP_BUILD = "2026-09-26c";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -990,7 +990,7 @@ function linePhoto(line, inventory = []) {
 // The product column of a bill. The server matches each line of the
 // order's product summary back to inventory, so even an order placed
 // before photos existed shows its pictures now.
-function OrderProductCell({ order, size = 30 }) {
+function OrderProductCell({ order, size = 30, onFix }) {
   const items = Array.isArray(order.items) ? order.items : [];
   const withPhotos = items.filter((it) => it.imageUrl);
   // Same name, several products — the server refused to guess. Better the
@@ -1012,7 +1012,17 @@ function OrderProductCell({ order, size = 30 }) {
       <span style={{ color: COLORS.textDim, minWidth: 0 }}>
         {order.product}{order.qty ? ` \u00d7${order.qty}` : ""}
         {unsure && withPhotos.length === 0 && (
-          <div style={{ fontSize: 10, color: COLORS.textFaint }}>Isi naam ke kai items hain</div>
+          <div style={{ fontSize: 10, color: COLORS.textFaint }}>
+            Isi naam ke kai items hain{onFix ? " — " : ""}
+            {onFix && (
+              <button
+                onClick={onFix}
+                style={{ background: "none", border: "none", padding: 0, color: COLORS.accent, fontSize: 10, cursor: "pointer" }}
+              >
+                product chunein
+              </button>
+            )}
+          </div>
         )}
       </span>
     </div>
@@ -1257,6 +1267,7 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
   const [returning, setReturning] = useState(null);
   const [paying, setPaying] = useState(null);
   const [viewingBill, setViewingBill] = useState(null);
+  const [fixingLine, setFixingLine] = useState(null);
   const [dueOnly, setDueOnly] = useState(false);
   const [sellerFilter, setSellerFilter] = useState("");
   const [sendingBulk, setSendingBulk] = useState(false);
@@ -1336,6 +1347,30 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
   // on an order, only the total, so the lines show what was sold and the
   // totals below show the money.
   if (viewingBill) {
+    const lines = viewingBill.items || [];
+    const pickProduct = async (chosen) => {
+      // Keep every other line as it was; only the one being corrected
+      // changes. Prices already on the bill are preserved.
+      const next = lines.map((l, i) => (
+        i === fixingLine
+          ? { id: chosen.id, qty: l.qty || 1, price: l.price ?? chosen.price }
+          : { id: l.inventoryId, qty: l.qty || 1, price: l.price }
+      ));
+      if (next.some((l) => !l.id)) {
+        notify("Pehle har line ka product chunein");
+        return;
+      }
+      try {
+        const saved = await setOrderItems(viewingBill.id, next);
+        update((list) => list.map((x) => (x.id === saved.id ? { ...x, ...saved } : x)));
+        setViewingBill(saved);
+        setFixingLine(null);
+        notify("Bill theek ho gaya");
+      } catch (err) {
+        notify(`Save nahi hua: ${err.message}`);
+      }
+    };
+
     const bill = {
       ...viewingBill,
       items: (viewingBill.items || []).map((it, i) => ({
@@ -1348,7 +1383,23 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
       subtotal: Number(viewingBill.sell || 0) + Number(viewingBill.discount || 0),
       discount: 0,
     };
-    return <ReceiptView receipt={bill} inventory={inventory || []} onNew={() => setViewingBill(null)} backLabel="Wapas" />;
+    return (
+      <div>
+        <ReceiptView
+          receipt={bill} inventory={inventory || []} backLabel="Wapas"
+          onNew={() => { setViewingBill(null); setFixingLine(null); }}
+          onFixItems={(idx) => setFixingLine(idx)}
+        />
+        {fixingLine !== null && lines[fixingLine] && (
+          <div className="mn-noprint" style={{ maxWidth: 380, margin: "0 auto" }}>
+            <ItemFixer
+              line={lines[fixingLine]} allItems={inventory || []}
+              onPick={pickProduct} onCancel={() => setFixingLine(null)}
+            />
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -1420,7 +1471,7 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
                     {o.customer}
                     {o.phone && <div style={{ fontSize: 11, color: COLORS.textFaint }}>{o.phone}</div>}
                   </td>
-                  <td><OrderProductCell order={o} /></td>
+                  <td><OrderProductCell order={o} onFix={() => { setViewingBill(o); setFixingLine(0); }} /></td>
                   <td className="mn-num">{fmt(o.sell)}</td>
                   <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.courier || "—"}{o.tracking ? ` · ${o.tracking}` : ""}</td>
                   <td>
@@ -2237,7 +2288,67 @@ function RowLine({ label, value, bold, negative }) {
   );
 }
 
-function ReceiptView({ receipt, onNew, inventory = [], backLabel = "New bill" }) {
+// Orders store dates in several shapes — a plain "2026-09-26" from the
+// till, a full timestamp from the database. A customer's slip should show
+// neither raw.
+function billDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value).slice(0, 10);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Picking the dress a bill was actually for.
+//
+// Old bills recorded only a name, and this shop gives many dresses the
+// same one ("3PC", "2pc"), so the bill cannot say which dress it was.
+// Rather than guess a photo, the app asks — once — and then the bill
+// carries the real product for good.
+function ItemFixer({ line, allItems, onPick, onCancel }) {
+  const [q, setQ] = useState("");
+  // Start with the products that share this line's name, since that is
+  // almost always the answer; searching widens to the whole stock.
+  const base = (line.candidates && line.candidates.length > 0)
+    ? line.candidates
+    : (allItems || []).filter((i) => (i.name || "").toLowerCase() === (line.name || "").toLowerCase());
+  const pool = q.trim()
+    ? (allItems || []).filter((i) =>
+        `${i.name || ""} ${i.sku || ""} ${i.parentName || ""} ${i.color || ""} ${i.size || ""}`
+          .toLowerCase().includes(q.trim().toLowerCase()))
+    : base;
+
+  return (
+    <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 14, marginTop: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Kaun sa "{line.name}" tha?</span>
+        <button onClick={onCancel} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={15} /></button>
+      </div>
+      <input
+        className="mn-input" placeholder="Naam, SKU, rang ya design se dhoondein"
+        value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 10 }}
+      />
+      <div className="mn-scroll" style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+        {pool.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : pool.map((c) => (
+          <button
+            key={c.id} onClick={() => onPick(c)}
+            style={{ display: "flex", alignItems: "center", gap: 10, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 8, cursor: "pointer", textAlign: "left", color: COLORS.text }}
+          >
+            <Thumb url={c.imageUrl || c.image} size={40} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5 }}>{c.name}</div>
+              <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>
+                {[c.parentName, c.color, c.size, c.sku].filter(Boolean).join(" · ")}
+              </div>
+            </span>
+            <span className="mn-num" style={{ fontSize: 12 }}>{fmt(c.price)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReceiptView({ receipt, onNew, inventory = [], backLabel = "New bill", onFixItems }) {
   const due = Math.max(0, receipt.sell - receipt.amountPaid);
   const photoFor = (it) => linePhoto(it, inventory);
   return (
@@ -2248,16 +2359,38 @@ function ReceiptView({ receipt, onNew, inventory = [], backLabel = "New bill" })
           <div style={{ fontSize: 11, color: COLORS.textFaint }}>zairascollection.com</div>
         </div>
         <div style={{ fontSize: 12, color: COLORS.textDim, display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-          <span>{receipt.orderNo}</span><span>{receipt.date}</span>
+          <span>{receipt.orderNo}</span><span>{billDate(receipt.date)}</span>
         </div>
         <div style={{ fontSize: 12, marginBottom: 10 }}>Customer: {receipt.customer}{receipt.phone ? ` · ${receipt.phone}` : ""}</div>
         <div style={{ borderTop: `1px dashed ${COLORS.border}`, borderBottom: `1px dashed ${COLORS.border}`, padding: "10px 0", margin: "10px 0" }}>
-          {receipt.items.map((it) => (
+          {receipt.items.map((it, idx) => (
             <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 8 }}>
-              <Thumb url={photoFor(it)} size={34} eager />
-              <span style={{ flex: 1 }}>{it.name} ×{it.qty}</span>
-              {Number.isFinite(Number(it.price)) && (
-                <span className="mn-num">{fmt(it.price * it.qty)}</span>
+              {onFixItems && !photoFor(it) ? (
+                // No picture because the product could not be identified.
+                // The owner knows which dress it was — one tap fixes the
+                // bill for good.
+                <button
+                  onClick={() => onFixItems(idx)} title="Product chunein" className="mn-noprint"
+                  style={{ padding: 0, border: `1px dashed ${COLORS.border}`, borderRadius: 6, background: "none", cursor: "pointer" }}
+                >
+                  <Thumb url={null} size={34} eager />
+                </button>
+              ) : (
+                <Thumb url={photoFor(it)} size={34} eager />
+              )}
+              <span style={{ flex: 1 }}>
+                {it.name} ×{it.qty}
+                {onFixItems && !photoFor(it) && (
+                  <button
+                    onClick={() => onFixItems(idx)} className="mn-noprint"
+                    style={{ display: "block", background: "none", border: "none", padding: 0, color: COLORS.accent, fontSize: 10.5, cursor: "pointer" }}
+                  >
+                    Kaun sa product tha? Chunein
+                  </button>
+                )}
+              </span>
+              {it.price !== null && it.price !== undefined && it.price !== "" && Number.isFinite(Number(it.price)) && (
+                <span className="mn-num">{fmt(Number(it.price) * it.qty)}</span>
               )}
             </div>
           ))}
