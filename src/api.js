@@ -172,7 +172,12 @@ export async function getAuditLog({ resource, changedBy, action } = {}) {
 // `updateTotals` is off unless asked: fixing a picture must not silently
 // change what the customer was charged.
 export async function setOrderItems(id, items, updateTotals = false) {
-  return request(`/orders/${id}/items`, { method: "PUT", body: { items, updateTotals } });
+  const row = await request(`/orders/${id}/items`, { method: "PUT", body: { items, updateTotals } });
+  // Through the same name mapping as every other order. Without this the
+  // caller gets order_no / amount_paid alongside the row's existing
+  // orderNo / amountPaid, and the record quietly turns into a mixture of
+  // both spellings that nothing downstream reads correctly.
+  return fromApi("orders", row);
 }
 
 // Which backend build is actually running. Needs no token — it is there so

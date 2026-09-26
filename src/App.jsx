@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-26c";
+const APP_BUILD = "2026-09-26d";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -1362,9 +1362,13 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
       }
       try {
         const saved = await setOrderItems(viewingBill.id, next);
-        update((list) => list.map((x) => (x.id === saved.id ? { ...x, ...saved } : x)));
         setViewingBill(saved);
         setFixingLine(null);
+        // Deliberately NOT update(): that runs the generic diff-sync,
+        // which would push this row — line items, photo urls and all —
+        // straight back at the server and undo the correction that was
+        // just saved. The server already has the truth; re-read it.
+        if (reload) reload();
         notify("Bill theek ho gaya");
       } catch (err) {
         notify(`Save nahi hua: ${err.message}`);
