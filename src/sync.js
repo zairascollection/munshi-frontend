@@ -16,9 +16,15 @@ export const FILE_FIELDS = new Set(["image"]);
 export const REMOVE_FILE = "__munshi_remove_file__";
 
 // Fields the server computes and sends down with each row. They must
-// never travel back up — there is no column behind them, and an order's
-// resolved `items` would be rejected or, worse, stored.
-export const SERVER_DERIVED = new Set(["imageUrl", "image_url", "items"]);
+// never travel back up — there is no column behind them.
+export const SERVER_DERIVED = new Set(["imageUrl", "image_url"]);
+
+// `items` is both: the till WRITES it when a bill is created (the exact
+// products sold), and the server READS it back enriched with photo urls
+// and match flags. So it may be created but never patched — otherwise an
+// edit would write the enriched copy, complete with image urls, back over
+// the real record.
+const NEVER_PATCHED = new Set([...SERVER_DERIVED, "items"]);
 
 // null, undefined and "" all mean "nothing here". The form turns a null
 // column into "" for its inputs, and without this they would look like a
@@ -51,7 +57,7 @@ export function diffForSync(before, after) {
   for (const key of Object.keys(after)) {
     // Derived by the server, never writable: the photo URL, and the line
     // items an order's product summary was resolved into.
-    if (SERVER_DERIVED.has(key)) continue;
+    if (NEVER_PATCHED.has(key)) continue;
 
     const value = after[key];
 

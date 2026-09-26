@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-26";
+const APP_BUILD = "2026-09-26b";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -993,6 +993,9 @@ function linePhoto(line, inventory = []) {
 function OrderProductCell({ order, size = 30 }) {
   const items = Array.isArray(order.items) ? order.items : [];
   const withPhotos = items.filter((it) => it.imageUrl);
+  // Same name, several products — the server refused to guess. Better the
+  // owner knows the picture is missing than trusts a wrong one.
+  const unsure = items.some((it) => it.ambiguous);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       {withPhotos.length > 0 && (
@@ -1008,6 +1011,9 @@ function OrderProductCell({ order, size = 30 }) {
       )}
       <span style={{ color: COLORS.textDim, minWidth: 0 }}>
         {order.product}{order.qty ? ` \u00d7${order.qty}` : ""}
+        {unsure && withPhotos.length === 0 && (
+          <div style={{ fontSize: 10, color: COLORS.textFaint }}>Isi naam ke kai items hain</div>
+        )}
       </span>
     </div>
   );
@@ -1336,6 +1342,7 @@ function Orders({ orders, inventory, accounts, update, updateAccounts, notify, r
         id: it.inventoryId || `${viewingBill.id}-${i}`,
         name: it.name,
         qty: it.qty,
+        price: it.price,
         image: it.imageUrl,
       })),
       subtotal: Number(viewingBill.sell || 0) + Number(viewingBill.discount || 0),
@@ -2363,6 +2370,10 @@ function POS({ data, update, notify, user, role }) {
       // Counter sale: no courier, so no delivery charge — and tagging the
       // channel keeps POS separate from website sales in the profit tracker.
       channel: "Walk-in / POS", deliveryCharge: 0,
+      // Exactly which products were sold. Several items in this shop share
+      // a name ("3PC", "2pc"), so a bill that records only the name cannot
+      // be traced back to the right product — or the right photo — later.
+      items: cart.map((c) => ({ id: c.id, name: c.name, qty: c.qty, price: Number(c.price) })),
     };
     update("orders", (list) => [...list, newOrder]);
     update("inventory", (list) => list.map((inv) => {
