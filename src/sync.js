@@ -97,3 +97,18 @@ export function createPayload(item) {
 export function isTempId(id) {
   return !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || ""));
 }
+
+// Many different dresses in this shop share a name ("3PC", "2pc"). That
+// is what made old bills impossible to tie back to a product — and no
+// amount of matching later can undo it. Catching it at the moment the
+// item is named is the only real fix, so this returns the sentence to
+// show, or null when the name is new.
+export function duplicateNameWarning(items, name) {
+  const wanted = String(name || "").trim().toLowerCase();
+  if (!wanted) return null;
+  const same = (items || []).filter(
+    (i) => String(i.name || "").trim().toLowerCase() === wanted
+  );
+  if (same.length === 0) return null;
+  return `Is naam ke ${same.length} item pehle se hain. Naam thora khaas karein (rang ya design mila kar) — warna bill par pata nahi chalega ke kaun sa becha.`;
+}

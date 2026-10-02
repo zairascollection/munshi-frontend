@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import Login from "./Login";
 import { COLORS, CHART_COLORS, fmt } from "./theme";
-import { initialFormValues, diffForSync, createPayload, REMOVE_FILE, isTempId } from "./sync";
+import { initialFormValues, diffForSync, createPayload, REMOVE_FILE, isTempId, duplicateNameWarning } from "./sync";
 
 // recharts is loaded on demand — only the two screens that draw charts pay
 // for it, and the rest of the app starts without waiting on 150 KB.
@@ -58,7 +58,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-09-26d";
+const APP_BUILD = "2026-10-02";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -805,7 +805,9 @@ function LogoMark({ size = 36 }) {
   );
 }
 
-function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
+// `warn` returns a sentence when the values look like a mistake worth
+// mentioning. It never blocks the save — the shopkeeper may well mean it.
+function AddForm({ fields, onCancel, onSave, title, initialValues, footer, warn }) {
   const [vals, setVals] = useState(() => initialFormValues(fields, initialValues));
   const set = (k, v) => setVals((s) => ({ ...s, [k]: v }));
   const submit = () => {
@@ -917,6 +919,11 @@ function AddForm({ fields, onCancel, onSave, title, initialValues, footer }) {
         ))}
       </div>
       {footer && footer(vals)}
+      {warn && warn(vals) && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: COLORS.accent, background: COLORS.accentDim, border: `1px solid ${COLORS.accent}`, borderRadius: 7, padding: "8px 10px" }}>
+          {warn(vals)}
+        </div>
+      )}
       <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
         <button className="mn-btn" onClick={submit}>Save</button>
         <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
@@ -1052,11 +1059,19 @@ function Inventory({ items, update, notify, role }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [q, setQ] = useState("");
+  // Sold out items drop out of the working list on their own, but the
+  // record is NOT deleted: old bills point at it for their photo, and the
+  // change history refers to it. Deleting would break both. "Khatam ho
+  // gaya" brings them back into view so stock can be added again.
+  const [showSoldOut, setShowSoldOut] = useState(false);
   const isOwner = role === "owner";
-  const filtered = items.filter((i) =>
+  const soldOut = items.filter((i) => Number(i.quantity || 0) <= 0);
+  const matches = (i) =>
     `${i.name || ""}${i.sku || ""}${i.category || ""}${i.parentName || ""}${i.size || ""}${i.color || ""}`
-      .toLowerCase().includes(q.toLowerCase())
-  );
+      .toLowerCase().includes(q.toLowerCase());
+  const filtered = items
+    .filter((i) => (showSoldOut ? Number(i.quantity || 0) <= 0 : Number(i.quantity || 0) > 0))
+    .filter(matches);
   const editingItem = items.find((i) => i.id === editingId);
 
   // Rows sharing a "Design / group name" are shown under one heading so a
@@ -1122,8 +1137,18 @@ function Inventory({ items, update, notify, role }) {
   return (
     <Panel
       title="Inventory" addLabel="Add item" onAdd={() => setAdding(true)}
-      count={`${items.length} items`}
-      extra={<SearchBox value={q} onChange={setQ} />}
+      count={`${items.length - soldOut.length} mojood${soldOut.length ? ` · ${soldOut.length} khatam` : ""}`}
+      extra={(
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <SearchBox value={q} onChange={setQ} />
+          <button
+            className={showSoldOut ? "mn-btn" : "mn-btn-ghost"} style={{ fontSize: 12, whiteSpace: "nowrap" }}
+            onClick={() => setShowSoldOut((v) => !v)}
+          >
+            {showSoldOut ? `Mojood stock (${items.length - soldOut.length})` : `Khatam ho gaya (${soldOut.length})`}
+          </button>
+        </div>
+      )}
     >
       <div style={{ padding: "10px 18px", fontSize: 11.5, color: COLORS.textFaint, borderBottom: `1px solid ${COLORS.borderSoft}` }}>
         Real cost sab ko dikhti hai aur sab edit kar sakte hain — lekin har tabdeeli owner ke <b style={{ color: COLORS.textDim }}>Change history</b> mein save hoti hai (kis ne, kab, kya se kya kiya). Low stock alert sirf un items par aata hai jin par ghanti <b style={{ color: COLORS.accent }}>on</b> ki gayi ho.
@@ -1131,6 +1156,10 @@ function Inventory({ items, update, notify, role }) {
       {adding && (
         <AddForm
           title="New inventory item" fields={baseFields} onCancel={() => setAdding(false)}
+          // Ek hi naam ke kai items hon to bill par yeh pata nahi chalta
+          // ke kaun sa becha gaya. Naam likhte waqt hi bata dena behtar
+          // hai — baad mein har bill alag se theek karna parta hai.
+          warn={(vals) => duplicateNameWarning(items, vals.name)}
           onSave={(v) => {
             update((list) => [...list, { id: genId(), ...v, quantity: Number(v.quantity), reorder: Number(v.reorder), cost: Number(v.cost || 0), price: Number(v.price) }]);
             setAdding(false);
@@ -2440,12 +2469,30 @@ function POS({ data, update, notify, user, role }) {
   const [accountId, setAccountId] = useState((data.accounts && data.accounts[0] && data.accounts[0].id) || "");
   const [receipt, setReceipt] = useState(null);
 
-  const items = data.inventory.filter((i) => i.name.toLowerCase().includes(search.toLowerCase()));
+  // Khatam shuda maal counter par nahi dikhna chahiye — warna woh bill
+  // ban jata hai jo bhejna mumkin hi nahi. SKU scan karne par phir bhi
+  // mil jata hai, taake stock abhi abhi aaya ho to ruke nahi.
+  const items = data.inventory
+    .filter((i) => Number(i.quantity || 0) > 0)
+    .filter((i) => (i.name || "").toLowerCase().includes(search.toLowerCase()));
 
   const addToCart = (item) => {
+    const available = Number(item.quantity || 0);
     setCart((c) => {
       const found = c.find((x) => x.id === item.id);
-      if (found) return c.map((x) => (x.id === item.id ? { ...x, qty: x.qty + 1 } : x));
+      if (found) {
+        // Stock par rukna zaroori hai: warna bill ban jata hai aur kami
+        // tab pata chalti hai jab parcel pack ho raha hota hai.
+        if (available > 0 && found.qty >= available) {
+          notify(`${item.name}: sirf ${available} baqi hain`);
+          return c;
+        }
+        return c.map((x) => (x.id === item.id ? { ...x, qty: x.qty + 1 } : x));
+      }
+      if (available <= 0) {
+        notify(`${item.name}: stock khatam hai`);
+        return c;
+      }
       return [...c, {
         id: item.id, name: item.name,
         price: Number(item.price), cost: Number(item.cost), qty: 1,
@@ -2470,7 +2517,17 @@ function POS({ data, update, notify, user, role }) {
   };
   const photoOf = (c) => linePhoto(c, data.inventory);
   const changeQty = (id, delta) => {
-    setCart((c) => c.map((x) => (x.id === id ? { ...x, qty: Math.max(1, x.qty + delta) } : x)).filter((x) => x.qty > 0));
+    const stockOf = (x) => Number((data.inventory.find((i) => i.id === x.id) || {}).quantity || 0);
+    setCart((c) => c.map((x) => {
+      if (x.id !== id) return x;
+      const max = stockOf(x);
+      const next = x.qty + delta;
+      if (delta > 0 && max > 0 && next > max) {
+        notify(`${x.name}: sirf ${max} baqi hain`);
+        return x;
+      }
+      return { ...x, qty: Math.max(1, next) };
+    }).filter((x) => x.qty > 0));
   };
   const removeItem = (id) => setCart((c) => c.filter((x) => x.id !== id));
 
@@ -3182,7 +3239,18 @@ function ProfitTracker({ notify }) {
   if (loading && !a) return <EmptyRow text="Profit data load ho raha hai..." />;
   if (!a) return <EmptyRow text="Data load nahi hua." />;
 
-  const s = a.summary;
+  // One missing field used to take the entire app to a blank screen: the
+  // server computed the daily series and never sent it, so daily.length
+  // threw and React tore the whole tree down. A report with a gap in it
+  // is a report; a white screen is the shop losing its till.
+  const s = a.summary || {};
+  const roas = a.roas || {};
+  const daily = a.daily || [];
+  const list = (v) => (Array.isArray(v) ? v : []);
+
+  if (!a.summary) {
+    return <EmptyRow text="Profit data adhoora aaya — server update karein, phir dobara khole." />;
+  }
   const tone = s.netProfit >= 0 ? "positive" : "negative";
 
   return (
@@ -3207,7 +3275,7 @@ function ProfitTracker({ notify }) {
         <StatCard label="Revenue" value={fmt(s.revenue)} sub={`${s.orders} orders · AOV ${fmt(s.aov)}`} />
         <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />
         <StatCard label="COD costs" value={fmt(s.codCosts)} sub="Delivery + return + refunds + packing" tone="negative" />
-        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={a.roas.cac ? `CAC ${fmt(a.roas.cac)} per delivered order` : "Ad spend add karein"} tone="negative" />
+        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={roas.cac ? `CAC ${fmt(roas.cac)} per delivered order` : "Ad spend add karein"} tone="negative" />
         <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={tone} />
         <StatCard label="Return rate" value={`${s.returnRate}%`} sub={`${s.returnedOrders} of ${s.orders} orders`} tone={s.returnRate > 20 ? "negative" : undefined} />
       </div>
@@ -3242,43 +3310,43 @@ function ProfitTracker({ notify }) {
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
             <SectionHeading title="ROAS — asli tasveer" />
             <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <StatCard label="Purchase ROAS" value={a.roas.purchase != null ? `${a.roas.purchase}x` : "—"} sub="Har order count hota hai" />
+              <StatCard label="Purchase ROAS" value={roas.purchase != null ? `${roas.purchase}x` : "—"} sub="Har order count hota hai" />
               <StatCard
-                label="Post-delivery ROAS" value={a.roas.postDelivery != null ? `${a.roas.postDelivery}x` : "—"}
+                label="Post-delivery ROAS" value={roas.postDelivery != null ? `${roas.postDelivery}x` : "—"}
                 sub="Sirf delivered orders"
-                tone={a.roas.postDelivery != null && a.roas.postDelivery < 1.5 ? "negative" : "positive"}
+                tone={roas.postDelivery != null && roas.postDelivery < 1.5 ? "negative" : "positive"}
               />
             </div>
             <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 10 }}>
               COD mein purchase ROAS hamesha bara lagta hai. Faisla post-delivery ROAS par karein — cash jo waqai aya.
-              Cash collected: <span className="mn-num" style={{ color: COLORS.text }}>{fmt(a.roas.cashCollected)}</span>
+              Cash collected: <span className="mn-num" style={{ color: COLORS.text }}>{fmt(roas.cashCollected)}</span>
             </div>
           </div>
 
           <ChartCard title="Daily revenue vs ad spend vs profit" height={220}>
-            {a.daily.length === 0 ? <EmptyRow text="Is period mein koi data nahi." /> : (
-              <Suspense fallback={<ChartFallback />}><DailyProfitTrend data={a.daily} /></Suspense>
+            {daily.length === 0 ? <EmptyRow text="Is period mein koi data nahi." /> : (
+              <Suspense fallback={<ChartFallback />}><DailyProfitTrend data={daily} /></Suspense>
             )}
           </ChartCard>
         </div>
       </div>
 
-      <BreakdownTable title="City-wise performance" rows={a.byCity} keyLabel="City" hint="Jahan return rate zyada hai, wahan COD band karke advance lein." />
-      <BreakdownTable title="Courier-wise performance" rows={a.byCourier} keyLabel="Courier" hint="Jo courier zyada return karwata hai, uska hissa kam karein." />
-      <BreakdownTable title="Channel-wise performance" rows={a.byChannel} keyLabel="Channel" />
+      <BreakdownTable title="City-wise performance" rows={list(a.byCity)} keyLabel="City" hint="Jahan return rate zyada hai, wahan COD band karke advance lein." />
+      <BreakdownTable title="Courier-wise performance" rows={list(a.byCourier)} keyLabel="Courier" hint="Jo courier zyada return karwata hai, uska hissa kam karein." />
+      <BreakdownTable title="Channel-wise performance" rows={list(a.byChannel)} keyLabel="Channel" />
       <BreakdownTable
-        title="Kis ke through kitni sale (sold by)" rows={a.bySeller} keyLabel="Sold by"
+        title="Kis ke through kitni sale (sold by)" rows={list(a.bySeller)} keyLabel="Sold by"
         hint="Affiliates aur staff dono yahan aate hain — commission aur performance dono isi se dekhein."
       />
-      <BreakdownTable title="Staff-wise sales (billed by)" rows={a.byStaff} keyLabel="Billed by" hint="Ye woh banda hai jis ne bill likha — sold by se alag ho sakta hai." />
+      <BreakdownTable title="Staff-wise sales (billed by)" rows={list(a.byStaff)} keyLabel="Billed by" hint="Ye woh banda hai jis ne bill likha — sold by se alag ho sakta hai." />
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
         <SectionHeading title="Product-wise profit" />
-        {a.byProduct.length === 0 ? <EmptyRow text="Abhi tak koi product bika nahi." /> : (
+        {list(a.byProduct).length === 0 ? <EmptyRow text="Abhi tak koi product bika nahi." /> : (
           <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr><th>Product</th><th>Units</th><th>Returned</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th></tr></thead>
             <tbody>
-              {a.byProduct.map((pr) => (
+              {list(a.byProduct).map((pr) => (
                 <tr key={pr.name}>
                   <td>{pr.name}</td>
                   <td className="mn-num">{pr.units}</td>
@@ -3297,14 +3365,16 @@ function ProfitTracker({ notify }) {
   );
 }
 
-function BreakdownTable({ title, rows, keyLabel, hint }) {
+// showProfit=false drops the money columns entirely — a staff-safe view
+// of the same table. Not hidden with CSS: not rendered.
+function BreakdownTable({ title, rows, keyLabel, hint, showProfit = true }) {
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
       <SectionHeading title={title} />
       {(!rows || rows.length === 0) ? <EmptyRow text="Is period mein koi data nahi." /> : (
         <>
           <div className="mn-tablewrap"><table className="mn-table">
-            <thead><tr><th>{keyLabel}</th><th>Orders</th><th>Delivered</th><th>Returned</th><th>Return rate</th><th>Revenue</th><th>Profit</th></tr></thead>
+            <thead><tr><th>{keyLabel}</th><th>Orders</th><th>Delivered</th><th>Returned</th><th>Return rate</th><th>Revenue</th>{showProfit && <th>Profit</th>}</tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.key}>
@@ -3314,7 +3384,9 @@ function BreakdownTable({ title, rows, keyLabel, hint }) {
                   <td className="mn-num" style={{ color: r.returned ? COLORS.negative : COLORS.textFaint }}>{r.returned}</td>
                   <td className="mn-num" style={{ color: r.returnRate > 20 ? COLORS.negative : COLORS.textDim }}>{r.returnRate}%</td>
                   <td className="mn-num">{fmt(r.revenue)}</td>
-                  <td className="mn-num" style={{ color: r.profit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(r.profit)}</td>
+                  {showProfit && (
+                    <td className="mn-num" style={{ color: r.profit >= 0 ? COLORS.positive : COLORS.negative }}>{fmt(r.profit)}</td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -3335,6 +3407,9 @@ function BreakdownTable({ title, rows, keyLabel, hint }) {
 // =====================================================================
 function MonthlySheet({ notify }) {
   const [month, setMonth] = useState(todayISO().slice(0, 7));
+  // Profit ke saath / baghair. Off karne par cost, profit aur margin
+  // chhup jate hain, taake sheet staff ko dikhayi ja sake.
+  const [showProfit, setShowProfit] = useState(true);
   const [sheet, setSheet] = useState(null);
   const [saved, setSaved] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3424,8 +3499,12 @@ function MonthlySheet({ notify }) {
 
   if (loading && !sheet) return <EmptyRow text="Sheet ban rahi hai..." />;
   if (!sheet) return <EmptyRow text="Sheet load nahi hui." />;
+  if (!sheet.summary) return <EmptyRow text="Sheet adhoori aayi — server update karein, phir dobara khole." />;
 
   const s = sheet.summary;
+  const roas = sheet.roas || {};
+  const pending = sheet.pending || {};
+  const dueOrders = (pending.customers && pending.customers.orders) || [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -3447,16 +3526,66 @@ function MonthlySheet({ notify }) {
         Har mahine ki 1 tareekh ko pichle mahine ki sheet khud save ho jati hai. Yahan koi bhi mahina dobara bana kar dekh sakte hain.
       </div>
 
+      {/* Sheet do tarah se dekhi ja sakti hai: paise ke saath (profit,
+          cost, margin) ya sirf kaam ke aankre. Staff ko sheet dikhani ho
+          to profit chhupa dein. */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }} className="mn-noprint">
+        <button className={showProfit ? "mn-btn" : "mn-btn-ghost"} style={{ fontSize: 12 }} onClick={() => setShowProfit(true)}>
+          Profit ke saath
+        </button>
+        <button className={!showProfit ? "mn-btn" : "mn-btn-ghost"} style={{ fontSize: 12 }} onClick={() => setShowProfit(false)}>
+          Profit ke baghair
+        </button>
+        <span style={{ fontSize: 11, color: COLORS.textFaint }}>
+          {showProfit ? "Poori sheet — cost, profit aur margin samet." : "Sirf sale aur orders — cost aur profit chhupe hue."}
+        </span>
+      </div>
+
+      {/* Baqaya — jo bill ho chuka lekin paisa abhi nahi aaya. */}
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+        <SectionHeading title={`Baqaya — ${sheet.month}`} />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12, marginBottom: 12 }}>
+          <StatCard
+            label="Customers se lena hai" value={fmt((pending.customers && pending.customers.amount) || 0)}
+            sub={`${(pending.customers && pending.customers.count) || 0} bills`}
+            tone={((pending.customers && pending.customers.amount) || 0) > 0 ? "negative" : undefined}
+          />
+          <StatCard label="Staff ki salary baqaya" value={fmt(pending.salaries || 0)} sub={`${pending.salaryPeople || 0} log`} />
+          <StatCard label="Affiliate commission baqaya" value={fmt(pending.commissions || 0)} sub="Abhi tak pay nahi hui" />
+        </div>
+        {dueOrders.length === 0 ? (
+          <EmptyRow text="Is mahine ka saara paisa aa chuka hai." />
+        ) : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr><th>Bill</th><th>Customer</th><th>Date</th><th>Total</th><th>Mila</th><th>Baqaya</th><th>Due date</th></tr></thead>
+            <tbody>
+              {dueOrders.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.orderNo}</td>
+                  <td>{o.customer}{o.phone ? <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{o.phone}</div> : null}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(o.date || "").slice(0, 10)}</td>
+                  <td className="mn-num">{fmt(o.sell)}</td>
+                  <td className="mn-num" style={{ color: COLORS.positive }}>{fmt(o.amountPaid)}</td>
+                  <td className="mn-num" style={{ color: COLORS.negative, fontWeight: 600 }}>{fmt(o.due)}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{o.dueDate ? String(o.dueDate).slice(0, 10) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
         <StatCard label="Revenue" value={fmt(s.revenue)} sub={`${s.orders} orders`} />
-        <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />
-        <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={s.netProfit >= 0 ? "positive" : "negative"} />
+        {showProfit && <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />}
+        {showProfit && <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={s.netProfit >= 0 ? "positive" : "negative"} />}
         <StatCard label="Returns" value={`${s.returnedOrders}`} sub={`${s.returnRate}% · loss ${fmt(s.returnCharges + s.refunds)}`} tone={s.returnRate > 20 ? "negative" : undefined} />
-        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={sheet.roas.postDelivery != null ? `${sheet.roas.postDelivery}x post-delivery ROAS` : "No ad spend logged"} />
-        <StatCard label="Stock invested" value={fmt(sheet.stock?.invested || 0)} sub={`Retail ${fmt(sheet.stock?.retailValue || 0)}`} />
+        <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={roas.postDelivery != null ? `${roas.postDelivery}x post-delivery ROAS` : "No ad spend logged"} />
+        {showProfit && <StatCard label="Stock invested" value={fmt(sheet.stock?.invested || 0)} sub={`Retail ${fmt(sheet.stock?.retailValue || 0)}`} />}
       </div>
 
       <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {showProfit ? (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title={`Profit & loss — ${sheet.month}`} />
           <RowLine label="Revenue" value={s.revenue} bold />
@@ -3473,6 +3602,7 @@ function MonthlySheet({ notify }) {
             </div>
           </div>
         </div>
+        ) : <div />}
 
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
           <SectionHeading title="Return reasons" />
@@ -3497,10 +3627,10 @@ function MonthlySheet({ notify }) {
         </div>
       </div>
 
-      <BreakdownTable title="City-wise" rows={sheet.byCity} keyLabel="City" />
-      <BreakdownTable title="Courier-wise" rows={sheet.byCourier} keyLabel="Courier" />
-      <BreakdownTable title="Sold by — kis ke through" rows={sheet.bySeller} keyLabel="Sold by" />
-      <BreakdownTable title="Staff-wise (billed by)" rows={sheet.byStaff} keyLabel="Billed by" />
+      <BreakdownTable title="City-wise" rows={sheet.byCity} keyLabel="City" showProfit={showProfit} />
+      <BreakdownTable title="Courier-wise" rows={sheet.byCourier} keyLabel="Courier" showProfit={showProfit} />
+      <BreakdownTable title="Sold by — kis ke through" rows={sheet.bySeller} keyLabel="Sold by" showProfit={showProfit} />
+      <BreakdownTable title="Staff-wise (billed by)" rows={sheet.byStaff} keyLabel="Billed by" showProfit={showProfit} />
     </div>
   );
 }
@@ -3838,8 +3968,10 @@ function PurchaseForm({ suppliers, inventory, onCancel, onSaved, notify }) {
   const pickInventory = (key, id) => {
     const inv = inventory.find((x) => x.id === id);
     setItem(key, inv
-      ? { inventory_id: id, name: inv.name, sku: inv.sku || "", unit_cost: Number(inv.cost) || 0 }
-      : { inventory_id: "", name: "", sku: "" });
+      // The photo travels with the row so the person placing the order
+      // can see what they are buying, not just a name they typed.
+      ? { inventory_id: id, name: inv.name, sku: inv.sku || "", unit_cost: Number(inv.cost) || 0, image: inv.image || inv.imageUrl || null }
+      : { inventory_id: "", name: "", sku: "", image: null });
   };
 
   const total = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unit_cost) || 0), 0);
@@ -3889,10 +4021,11 @@ function PurchaseForm({ suppliers, inventory, onCancel, onSaved, notify }) {
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th>Item</th><th>Name</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Item</th><th>Name</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => (
             <tr key={it.key}>
+              <td><Thumb url={it.image} size={40} /></td>
               <td style={{ minWidth: 160 }}>
                 <select className="mn-input" value={it.inventory_id} onChange={(e) => pickInventory(it.key, e.target.value)}>
                   <option value="">+ New item</option>
@@ -3944,10 +4077,11 @@ function PurchaseDetail({ id, onClose, notify }) {
         <button onClick={onClose} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
       </div>
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th>Item</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Total</th></tr></thead>
+        <thead><tr><th></th><th>Item</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Total</th></tr></thead>
         <tbody>
           {po.items.map((it) => (
             <tr key={it.id}>
+              <td><Thumb url={it.image_url} size={44} /></td>
               <td>{it.name}</td>
               <td style={{ color: COLORS.textDim }}>{it.sku || "—"}</td>
               <td className="mn-num">{Number(it.qty)}</td>
@@ -4316,12 +4450,22 @@ function Consignments({ inventory, affiliates, orders, notify, role, reload }) {
         ) : (
           <div className="mn-tablewrap"><table className="mn-table">
             <thead><tr>
-              <th>Ref</th><th>Kis ke paas</th><th>Date</th><th>Diya</th><th>Wapas</th><th>Becha</th>
+              <th></th><th>Ref</th><th>Kis ke paas</th><th>Date</th><th>Diya</th><th>Wapas</th><th>Becha</th>
               <th>Abhi paas hai</th><th>Value</th><th>Status</th><th></th>
             </tr></thead>
             <tbody>
               {filtered.map((c) => (
                 <tr key={c.id}>
+                  {/* Photos of what went out — the holder's name and a
+                      reference number say nothing about which dresses
+                      are sitting at their shop. */}
+                  <td>
+                    <div style={{ display: "flex", gap: 3 }}>
+                      {(c.item_images || []).length === 0
+                        ? <Thumb url={null} size={30} />
+                        : (c.item_images || []).map((u, i) => <Thumb key={i} url={u} size={30} />)}
+                    </div>
+                  </td>
                   <td>{c.ref_no}</td>
                   <td>
                     {c.holder || "—"}
@@ -4472,7 +4616,7 @@ function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
                 <td style={{ minWidth: 200 }}>
                   <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
                     <option value="">— item chunein —</option>
-                    {inventory.map((inv) => (
+                    {inventory.filter((inv) => Number(inv.quantity || 0) > 0).map((inv) => (
                       <option key={inv.id} value={inv.id}>
                         {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
                       </option>
