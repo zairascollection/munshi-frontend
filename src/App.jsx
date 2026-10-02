@@ -60,7 +60,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-10-02c";
+const APP_BUILD = "2026-10-02d";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -3836,7 +3836,12 @@ function SupplierReturns({ suppliers, inventory, notify, role, reload }) {
         <SupplierReturnForm
           suppliers={suppliers} inventory={inventory} notify={notify}
           onCancel={() => setCreating(false)}
-          onSaved={() => { setCreating(false); load(); reload && reload(); notify("Return save ho gaya"); }}
+          onSaved={(summary) => {
+            setCreating(false);
+            load();
+            reload && reload();
+            notify(summary ? `Stock update: ${summary}` : "Return save ho gaya");
+          }}
         />
       )}
 
@@ -3955,6 +3960,10 @@ function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved })
           inventoryId: id, name: inv.name, sku: inv.sku || "",
           unitCost: Number(inv.cost) || 0, stock: Number(inv.quantity) || 0,
           image: inv.image || inv.imageUrl || null,
+          // Sending the whole lot back is the common case, and leaving
+          // this at 1 meant three of four pieces quietly stayed on the
+          // books. The number is still editable for a partial return.
+          qty: Number(inv.quantity) || 1,
         }
       : { inventoryId: "", name: "", sku: "", stock: null, image: null });
   };
@@ -3980,7 +3989,12 @@ function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved })
           qty: Number(it.qty), unitCost: Number(it.unitCost) || 0,
         })),
       });
-      onSaved();
+      // Name the stock change, so nobody has to go and check whether it
+      // happened.
+      onSaved(clean
+        .filter((it) => it.stock !== null)
+        .map((it) => `${it.name}: ${it.stock} → ${Math.max(0, it.stock - (Number(it.qty) || 0))}`)
+        .join(", "));
     } catch (err) {
       notify(`Save failed: ${err.message}`);
     } finally { setSaving(false); }
@@ -4016,7 +4030,7 @@ function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved })
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th>Item</th><th>Stock</th><th>Kitne wapis</th><th>Kharid rate</th><th>Value</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Abhi stock</th><th>Kitne wapis</th><th>Baad mein bachega</th><th>Kharid rate</th><th>Value</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => {
             const over = it.stock !== null && Number(it.qty) > it.stock;
@@ -4031,6 +4045,12 @@ function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved })
                     className="mn-input" type="number" style={{ width: 80, borderColor: over ? COLORS.negative : undefined }}
                     value={it.qty} onChange={(e) => setItem(it.key, { qty: e.target.value })}
                   />
+                </td>
+                {/* What the shelf will hold after saving. Without this the
+                    difference between "sab wapis" and "ek wapis" is
+                    invisible until someone looks at inventory later. */}
+                <td className="mn-num" style={{ fontWeight: 600, color: it.stock === null ? COLORS.textFaint : (Math.max(0, it.stock - (Number(it.qty) || 0)) === 0 ? COLORS.positive : COLORS.accent) }}>
+                  {it.stock === null ? "—" : Math.max(0, it.stock - (Number(it.qty) || 0))}
                 </td>
                 <td><input className="mn-input" type="number" style={{ width: 90 }} value={it.unitCost} onChange={(e) => setItem(it.key, { unitCost: e.target.value })} /></td>
                 <td className="mn-num">{fmt((Number(it.qty) || 0) * (Number(it.unitCost) || 0))}</td>
