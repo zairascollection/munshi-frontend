@@ -336,3 +336,32 @@ export async function downloadBackup({ includeImages = true } = {}) {
 export async function restoreBackup(backup) {
   return request("/backup/restore", { method: "POST", body: { backup, confirm: "RESTORE" } });
 }
+
+// --- Maal wholesaler ko wapis ---
+// Neither a sale nor a purchase: stock leaves and money comes back from
+// the supplier. Recorded separately so returned goods stop showing as
+// stock the shop no longer has.
+export async function listSupplierReturns() {
+  return request("/supplier-returns");
+}
+export async function getSupplierReturn(id) {
+  return request(`/supplier-returns/${id}`);
+}
+export async function createSupplierReturn(payload) {
+  return request("/supplier-returns", { method: "POST", body: payload });
+}
+export async function updateSupplierReturn(id, patch) {
+  return request(`/supplier-returns/${id}`, { method: "PUT", body: patch });
+}
+export async function removeSupplierReturn(id) {
+  return request(`/supplier-returns/${id}`, { method: "DELETE" });
+}
+
+// The supplier's own paper bill, attached to a purchase order so the
+// app's total can be checked against what the wholesaler charged.
+export async function savePurchaseBill(id, { billImage, billAmount }) {
+  return request(`/purchases/${id}/bill`, {
+    method: "PUT",
+    body: { bill_image: billImage, bill_amount: billAmount },
+  });
+}

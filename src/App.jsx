@@ -30,6 +30,8 @@ function ChartFallback() {
 import {
   api, getToken, setToken, me, syncWooCommerce, createUser, listUsers, removeUser,
   changePassword, sendLowStockAlert, getAuditLog, getAuditPeople, getVersion, setOrderItems,
+  listSupplierReturns, getSupplierReturn, createSupplierReturn, updateSupplierReturn, removeSupplierReturn,
+  savePurchaseBill,
   returnOrder, getSettings, saveSettings, getAnalytics, getMonthlySheet, getSavedSheets,
   listCustomers, customerRisk, saveCustomer,
   listPurchases, getPurchase, createPurchase, receivePurchase, removePurchase,
@@ -58,7 +60,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-10-02";
+const APP_BUILD = "2026-10-02b";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -69,6 +71,7 @@ const NAV = [
   { id: "employees", label: "Employees", icon: Users, ownerOnly: false },
   { id: "returns", label: "Returns", icon: Undo2, ownerOnly: false },
   { id: "consignments", label: "Stock diya hua", icon: PackageCheck, ownerOnly: false },
+  { id: "supplierReturns", label: "Wholesaler ko wapis", icon: Undo2, ownerOnly: true, managerOk: true },
   { id: "reports", label: "Reports", icon: BarChart3, ownerOnly: false },
   { id: "profit", label: "Profit tracker", icon: TrendingUp, ownerOnly: true, managerOk: true },
   { id: "monthly", label: "Monthly sheet", icon: CalendarDays, ownerOnly: true, managerOk: true },
@@ -88,7 +91,7 @@ const NAV = [
 // nav is grouped by what you're actually trying to do.
 const NAV_SECTIONS = [
   { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers"] },
-  { title: "Stock aana / jana", ids: ["purchases", "suppliers", "consignments"] },
+  { title: "Stock aana / jana", ids: ["purchases", "suppliers", "consignments", "supplierReturns"] },
   { title: "Paisa", ids: ["profit", "monthly", "reports", "finance", "accounts", "expenses", "adspend"] },
   { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
 ];
@@ -460,6 +463,7 @@ export default function App() {
           {tab === "monthly" && (role === "owner" || role === "manager") && <MonthlySheet notify={notify} />}
           {tab === "adspend" && (role === "owner" || role === "manager") && <AdSpend rows={data["ad-spend"] || []} update={(fn) => update("ad-spend", fn)} notify={notify} role={role} />}
           {tab === "suppliers" && (role === "owner" || role === "manager") && <Suppliers suppliers={data.suppliers || []} update={(fn) => update("suppliers", fn)} notify={notify} role={role} />}
+          {tab === "supplierReturns" && (role === "owner" || role === "manager") && <SupplierReturns suppliers={data.suppliers || []} inventory={data.inventory} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "purchases" && (role === "owner" || role === "manager") && <Purchases suppliers={data.suppliers || []} inventory={data.inventory} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "finance" && (role === "owner" || role === "manager") && <Finance data={data} metrics={metrics} />}
           {tab === "accounts" && (role === "owner" || role === "manager") && <Accounts accounts={data.accounts || []} update={(fn) => update("accounts", fn)} notify={notify} />}
@@ -3505,6 +3509,11 @@ function MonthlySheet({ notify }) {
   const roas = sheet.roas || {};
   const pending = sheet.pending || {};
   const dueOrders = (pending.customers && pending.customers.orders) || [];
+  // Profit counts a sale the day it is billed. The cash may still be with
+  // the customer, so the sheet shows both numbers side by side.
+  const dueFromCustomers = (pending.customers && pending.customers.amount) || 0;
+  const realisedProfit = Number(s.netProfit || 0) - Number(dueFromCustomers);
+  const owedByUs = Number(pending.salaries || 0) + Number(pending.commissions || 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -3578,7 +3587,14 @@ function MonthlySheet({ notify }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
         <StatCard label="Revenue" value={fmt(s.revenue)} sub={`${s.orders} orders`} />
         {showProfit && <StatCard label="Gross profit" value={fmt(s.grossProfit)} sub={`COGS ${fmt(s.cogs)}`} />}
-        {showProfit && <StatCard label="Net profit" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={s.netProfit >= 0 ? "positive" : "negative"} />}
+        {showProfit && <StatCard label="Net profit (kaghaz par)" value={fmt(s.netProfit)} sub={`${s.margin}% margin`} tone={s.netProfit >= 0 ? "positive" : "negative"} />}
+        {showProfit && (
+          <StatCard
+            label="Asli profit — baqaya nikal kar" value={fmt(realisedProfit)}
+            sub={dueFromCustomers > 0 ? `${fmt(dueFromCustomers)} abhi customers ke paas` : "Saara paisa aa chuka"}
+            tone={realisedProfit >= 0 ? "positive" : "negative"}
+          />
+        )}
         <StatCard label="Returns" value={`${s.returnedOrders}`} sub={`${s.returnRate}% · loss ${fmt(s.returnCharges + s.refunds)}`} tone={s.returnRate > 20 ? "negative" : undefined} />
         <StatCard label="Ad spend" value={fmt(s.adSpend)} sub={roas.postDelivery != null ? `${roas.postDelivery}x post-delivery ROAS` : "No ad spend logged"} />
         {showProfit && <StatCard label="Stock invested" value={fmt(sheet.stock?.invested || 0)} sub={`Retail ${fmt(sheet.stock?.retailValue || 0)}`} />}
@@ -3598,8 +3614,30 @@ function MonthlySheet({ notify }) {
           {s.tax > 0 && <RowLine label="− Tax" value={-s.tax} negative />}
           <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: 8, paddingTop: 8 }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, color: s.netProfit >= 0 ? COLORS.positive : COLORS.negative }}>
-              <span>Net profit</span><span className="mn-num">{fmt(s.netProfit)}</span>
+              <span>Net profit (kaghaz par)</span><span className="mn-num">{fmt(s.netProfit)}</span>
             </div>
+          </div>
+
+          {/* Kitabi profit aur haath ka paisa ek cheez nahi. Jo bill ho
+              chuka lekin paisa nahi aaya, woh profit mein gina ja chuka
+              hai — isay saaf nikal kar dikhana hi kaam ka hisaab hai. */}
+          <div style={{ marginTop: 14, borderTop: `1px dashed ${COLORS.border}`, paddingTop: 10 }}>
+            <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 6 }}>
+              Haath mein kitna aaya — baqaya nikal kar
+            </div>
+            <RowLine label="Net profit (kaghaz par)" value={s.netProfit} />
+            <RowLine label="− Jo paisa abhi nahi aaya (customers)" value={-dueFromCustomers} negative />
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: 8, paddingTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700, color: realisedProfit >= 0 ? COLORS.positive : COLORS.negative }}>
+                <span>Asli profit (paisa aane ke baad)</span>
+                <span className="mn-num">{fmt(realisedProfit)}</span>
+              </div>
+            </div>
+            {owedByUs > 0 && (
+              <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 8 }}>
+                Is ke ilawa {fmt(owedByUs)} humein dena hai (salary {fmt(pending.salaries || 0)} + commission {fmt(pending.commissions || 0)}) — yeh pehle hi upar kharch mein shamil hai.
+              </div>
+            )}
           </div>
         </div>
         ) : <div />}
@@ -3631,6 +3669,314 @@ function MonthlySheet({ notify }) {
       <BreakdownTable title="Courier-wise" rows={sheet.byCourier} keyLabel="Courier" showProfit={showProfit} />
       <BreakdownTable title="Sold by — kis ke through" rows={sheet.bySeller} keyLabel="Sold by" showProfit={showProfit} />
       <BreakdownTable title="Staff-wise (billed by)" rows={sheet.byStaff} keyLabel="Billed by" showProfit={showProfit} />
+    </div>
+  );
+}
+
+
+// =====================================================================
+// Maal wholesaler ko wapis.
+//
+// Faulty pieces, wrong article, unsold stock going back — none of it is
+// a sale and none of it is a purchase. Without its own record the stock
+// either sits on the books as goods the shop no longer has, or gets
+// quietly deleted and then nobody can prove what went back or what the
+// supplier still owes. Saving a return takes the stock off the shelf;
+// deleting one puts it back.
+// =====================================================================
+function SupplierReturns({ suppliers, inventory, notify, role, reload }) {
+  const [rows, setRows] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [viewing, setViewing] = useState(null);
+  const [q, setQ] = useState("");
+
+  const load = () => {
+    listSupplierReturns()
+      .then(setRows)
+      .catch((err) => notify(`Load failed: ${err.message}`));
+  };
+  useEffect(load, []);
+
+  const del = async (r) => {
+    try {
+      await removeSupplierReturn(r.id);
+      notify("Return hata diya — stock wapis stock mein aa gaya");
+      load();
+      reload && reload();
+    } catch (err) {
+      notify(`Delete failed: ${err.message}`);
+    }
+  };
+
+  const markRefunded = async (r) => {
+    try {
+      await updateSupplierReturn(r.id, { status: "Refunded", refundAmount: r.total });
+      notify("Refund mil gaya — record ho gaya");
+      load();
+    } catch (err) {
+      notify(`Update failed: ${err.message}`);
+    }
+  };
+
+  if (!rows) return <EmptyRow text="Load ho raha hai..." />;
+
+  const filtered = rows.filter((r) =>
+    `${r.ref_no || ""} ${r.supplier || ""} ${r.reason || ""}`.toLowerCase().includes(q.toLowerCase())
+  );
+  const pendingValue = rows
+    .filter((r) => r.status !== "Refunded")
+    .reduce((t, r) => t + Number(r.total || 0), 0);
+  const returnedValue = rows.reduce((t, r) => t + Number(r.total || 0), 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 12 }}>
+        <StatCard label="Wapis kiya hua maal" value={fmt(returnedValue)} sub={`${rows.length} returns`} />
+        <StatCard
+          label="Supplier se lena baqi" value={fmt(pendingValue)}
+          sub="Refund ya credit abhi nahi mila"
+          tone={pendingValue > 0 ? "negative" : "positive"}
+        />
+      </div>
+
+      {creating && (
+        <SupplierReturnForm
+          suppliers={suppliers} inventory={inventory} notify={notify}
+          onCancel={() => setCreating(false)}
+          onSaved={() => { setCreating(false); load(); reload && reload(); notify("Return save ho gaya"); }}
+        />
+      )}
+
+      {viewing && (
+        <SupplierReturnDetail id={viewing} notify={notify} onClose={() => setViewing(null)} />
+      )}
+
+      <Panel
+        title="Wholesaler ko wapis" addLabel="Maal wapis karein" onAdd={() => setCreating(true)}
+        count={`${rows.length} returns`}
+        extra={<SearchBox value={q} onChange={setQ} />}
+      >
+        {filtered.length === 0 ? (
+          <EmptyRow text="Abhi tak koi maal wapis nahi kiya." />
+        ) : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr>
+              <th></th><th>Ref</th><th>Supplier</th><th>Date</th><th>Pieces</th>
+              <th>Value</th><th>Wajah</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <div style={{ display: "flex", gap: 3 }}>
+                      {(r.item_images || []).length === 0
+                        ? <Thumb url={null} size={30} />
+                        : (r.item_images || []).map((u, i) => <Thumb key={i} url={u} size={30} />)}
+                    </div>
+                  </td>
+                  <td>{r.ref_no}</td>
+                  <td>{r.supplier || "—"}</td>
+                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{String(r.date || "").slice(0, 10)}</td>
+                  <td className="mn-num">{r.total_qty}</td>
+                  <td className="mn-num">{fmt(r.total)}</td>
+                  <td style={{ color: COLORS.textDim, fontSize: 12 }}>{r.reason || "—"}</td>
+                  <td>
+                    <Badge
+                      text={r.status === "Refunded" ? "Refund mil gaya" : "Lena baqi"}
+                      tone={r.status === "Refunded" ? "positive" : "accent"}
+                    />
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button className="mn-btn-ghost" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => setViewing(r.id)}>Items</button>
+                      {r.status !== "Refunded" && (
+                        <button className="mn-btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => markRefunded(r)}>
+                          <Check size={11} /> Refund mila
+                        </button>
+                      )}
+                      {canDelete(role) && <DeleteBtn onClick={() => del(r)} />}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function SupplierReturnDetail({ id, notify, onClose }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    getSupplierReturn(id).then(setData).catch((err) => notify(`Load failed: ${err.message}`));
+  }, [id]);
+
+  if (!data) return <EmptyRow text="Load ho raha hai..." />;
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <SectionHeading title={`${data.ref_no} — ${data.supplier || "Supplier"}`} />
+        <button onClick={onClose} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={16} /></button>
+      </div>
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr><th></th><th>Item</th><th>SKU</th><th>Pieces</th><th>Rate</th><th>Value</th></tr></thead>
+        <tbody>
+          {(data.items || []).map((it) => (
+            <tr key={it.id}>
+              <td><Thumb url={it.image_url} size={44} /></td>
+              <td>{it.name}</td>
+              <td style={{ color: COLORS.textDim }}>{it.sku || "—"}</td>
+              <td className="mn-num">{Number(it.qty)}</td>
+              <td className="mn-num">{fmt(it.unit_cost)}</td>
+              <td className="mn-num">{fmt(Number(it.qty) * Number(it.unit_cost))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+      {data.notes && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 10 }}>{data.notes}</div>}
+    </div>
+  );
+}
+
+function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved }) {
+  const [supplierId, setSupplierId] = useState("");
+  const [supplierName, setSupplierName] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [reason, setReason] = useState("Kharab / faulty");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [items, setItems] = useState([
+    { key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitCost: 0, stock: null, image: null },
+  ]);
+
+  const setItem = (key, patch) => setItems((l) => l.map((it) => (it.key === key ? { ...it, ...patch } : it)));
+  const addRow = () => setItems((l) => [...l, { key: genId(), inventoryId: "", name: "", sku: "", qty: 1, unitCost: 0, stock: null, image: null }]);
+  const removeRow = (key) => setItems((l) => (l.length > 1 ? l.filter((it) => it.key !== key) : l));
+
+  const pick = (key, id) => {
+    const inv = inventory.find((x) => x.id === id);
+    setItem(key, inv
+      ? {
+          inventoryId: id, name: inv.name, sku: inv.sku || "",
+          unitCost: Number(inv.cost) || 0, stock: Number(inv.quantity) || 0,
+          image: inv.image || inv.imageUrl || null,
+        }
+      : { inventoryId: "", name: "", sku: "", stock: null, image: null });
+  };
+
+  const totalQty = items.reduce((t, it) => t + (Number(it.qty) || 0), 0);
+  const totalValue = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
+  // Sending back more than the shelf holds means the count is already
+  // wrong — better caught here than after the stock goes negative.
+  const overReturned = items.filter((it) => it.stock !== null && Number(it.qty) > it.stock);
+
+  const save = async () => {
+    const clean = items.filter((it) => String(it.name).trim() && Number(it.qty) > 0);
+    if (clean.length === 0) return notify("Kam az kam ek item chunein");
+    if (!supplierId && !supplierName.trim()) return notify("Supplier chunein ya naam likhein");
+    if (overReturned.length > 0) return notify(`${overReturned[0].name}: itna stock maujood nahi`);
+    setSaving(true);
+    try {
+      await createSupplierReturn({
+        supplierId: supplierId || null, supplierName: supplierName || null,
+        date, reason, notes,
+        items: clean.map((it) => ({
+          inventoryId: it.inventoryId || null, name: it.name, sku: it.sku,
+          qty: Number(it.qty), unitCost: Number(it.unitCost) || 0,
+        })),
+      });
+      onSaved();
+    } catch (err) {
+      notify(`Save failed: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: 18 }}>
+      <SectionHeading title="Maal wholesaler ko wapis" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Supplier</label>
+          <select className="mn-input" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+            <option value="">— list mein nahi —</option>
+            {(suppliers || []).map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Ya naam likhein</label>
+          <input className="mn-input" value={supplierName} onChange={(e) => setSupplierName(e.target.value)} disabled={Boolean(supplierId)} placeholder="Wholesaler ka naam" />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Date</label>
+          <input className="mn-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Wajah</label>
+          <select className="mn-input" value={reason} onChange={(e) => setReason(e.target.value)}>
+            {["Kharab / faulty", "Ghalat article aaya", "Size ghalat", "Bika nahi", "Zyada aa gaya", "Aur wajah"].map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="mn-tablewrap"><table className="mn-table">
+        <thead><tr><th></th><th>Item</th><th>Stock</th><th>Kitne wapis</th><th>Kharid rate</th><th>Value</th><th></th></tr></thead>
+        <tbody>
+          {items.map((it) => {
+            const over = it.stock !== null && Number(it.qty) > it.stock;
+            return (
+              <tr key={it.key}>
+                <td><Thumb url={it.image} size={46} /></td>
+                <td style={{ minWidth: 200 }}>
+                  <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
+                    <option value="">— item chunein —</option>
+                    {(inventory || []).map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="mn-num" style={{ color: COLORS.textFaint }}>{it.stock === null ? "—" : it.stock}</td>
+                <td>
+                  <input
+                    className="mn-input" type="number" style={{ width: 80, borderColor: over ? COLORS.negative : undefined }}
+                    value={it.qty} onChange={(e) => setItem(it.key, { qty: e.target.value })}
+                  />
+                </td>
+                <td><input className="mn-input" type="number" style={{ width: 90 }} value={it.unitCost} onChange={(e) => setItem(it.key, { unitCost: e.target.value })} /></td>
+                <td className="mn-num">{fmt((Number(it.qty) || 0) * (Number(it.unitCost) || 0))}</td>
+                <td><button onClick={() => removeRow(it.key)} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer" }}><X size={14} /></button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table></div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+        <button className="mn-btn-ghost" onClick={addRow}><Plus size={13} /> Add row</button>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{totalQty} pcs · <span className="mn-num">{fmt(totalValue)}</span></div>
+      </div>
+
+      {overReturned.length > 0 && (
+        <div style={{ fontSize: 12, color: COLORS.negative, marginTop: 8 }}>
+          Itna stock maujood nahi: {overReturned.map((x) => x.name).join(", ")}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <input className="mn-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" />
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <button className="mn-btn" onClick={save} disabled={saving}>{saving ? "Save ho raha hai..." : "Return save karein"}</button>
+        <button className="mn-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 8 }}>
+        Save karte hi yeh maal stock se nikal jayega. Ghalti ho to return delete karne par stock wapis aa jata hai.
+      </div>
     </div>
   );
 }
@@ -4092,6 +4438,113 @@ function PurchaseDetail({ id, onClose, notify }) {
         </tbody>
       </table></div>
       {po.notes && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 10 }}>{po.notes}</div>}
+      <PurchaseBill po={po} notify={notify} onSaved={(next) => setPo((p) => ({ ...p, ...next }))} />
+    </div>
+  );
+}
+
+// The wholesaler's own bill, attached to the purchase order.
+//
+// Paper bills get lost, and when they do there is no way to check what
+// was actually charged. The photo lives with the order, and the amount
+// written on it is compared against the total the app worked out from
+// the lines — a mismatch is where money quietly leaks.
+function PurchaseBill({ po, notify, onSaved }) {
+  const [amount, setAmount] = useState(po.bill_amount ?? "");
+  const [preview, setPreview] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const calculated = Number(po.total || 0);
+  const stated = amount === "" || amount === null ? null : Number(amount) || 0;
+  const gap = stated === null ? null : Math.round((stated - calculated) * 100) / 100;
+
+  const pickFile = (file) => {
+    if (!file) return;
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      img.onload = () => {
+        // A bill needs to stay readable, so it is allowed more pixels
+        // than a product thumbnail.
+        const maxDim = 1400;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        setPreview(canvas.toDataURL("image/jpeg", 0.75));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const next = await savePurchaseBill(po.id, {
+        billImage: preview === null ? undefined : preview,
+        billAmount: amount === "" ? undefined : Number(amount) || 0,
+      });
+      setPreview(null);
+      onSaved(next);
+      notify("Bill save ho gaya");
+    } catch (err) {
+      notify(`Bill save nahi hua: ${err.message}`);
+    } finally { setSaving(false); }
+  };
+
+  const shown = preview || (po.bill_image_url ? `${API_BASE_URL}${po.bill_image_url}` : null);
+
+  return (
+    <div style={{ marginTop: 14, borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
+      <SectionHeading title="Supplier ka bill" />
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div>
+          {shown ? (
+            <a href={shown} target="_blank" rel="noreferrer">
+              <img
+                src={shown} alt="Supplier bill"
+                style={{ width: 150, borderRadius: 8, border: `1px solid ${COLORS.border}`, display: "block" }}
+              />
+            </a>
+          ) : (
+            <div style={{ width: 150, height: 110, borderRadius: 8, border: `1px dashed ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.textFaint, fontSize: 11 }}>
+              Bill ki tasveer nahi
+            </div>
+          )}
+          <input
+            type="file" accept="image/*" style={{ marginTop: 8, fontSize: 11, color: COLORS.textFaint, maxWidth: 150 }}
+            onChange={(e) => pickFile(e.target.files && e.target.files[0])}
+          />
+        </div>
+
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <label style={{ fontSize: 11, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>
+            Bill par likha total (Rs)
+          </label>
+          <input
+            className="mn-input" type="number" style={{ maxWidth: 180 }}
+            value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0"
+          />
+          <div style={{ marginTop: 10 }}>
+            <RowLine label="App ka hisaab (items se)" value={calculated} />
+            {stated !== null && <RowLine label="Bill par likha hua" value={stated} />}
+            {gap !== null && gap !== 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, fontWeight: 700, color: COLORS.negative, paddingTop: 6 }}>
+                <span>{gap > 0 ? "Bill zyada hai" : "Bill kam hai"}</span>
+                <span className="mn-num">{fmt(Math.abs(gap))}</span>
+              </div>
+            )}
+            {gap === 0 && (
+              <div style={{ fontSize: 12, color: COLORS.positive, paddingTop: 6 }}>Bill aur app ka hisaab barabar hai.</div>
+            )}
+          </div>
+          <button className="mn-btn" style={{ marginTop: 10 }} onClick={save} disabled={saving}>
+            {saving ? "Save ho raha hai..." : "Bill save karein"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
