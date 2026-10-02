@@ -6,7 +6,7 @@ import {
   Landmark, ScanLine, LogOut, RefreshCw, Pencil, Undo2, Megaphone,
   Settings as SettingsIcon, CalendarDays, FileText, History as HistoryIcon,
   MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check, Bell,
-  PackageCheck, UserCheck,
+  PackageCheck, UserCheck, ChevronDown,
 } from "lucide-react";
 import Login from "./Login";
 import { COLORS, CHART_COLORS, fmt } from "./theme";
@@ -60,7 +60,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-10-02b";
+const APP_BUILD = "2026-10-02c";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -1036,6 +1036,99 @@ function OrderProductCell({ order, size = 30, onFix }) {
           </div>
         )}
       </span>
+    </div>
+  );
+}
+
+// Choosing a product, with the product visible.
+//
+// A plain <select> cannot show a picture, so every form that picked an
+// item showed the photo only AFTER it had been chosen — which is too
+// late to notice you picked the wrong "3PC". This shows the photo, the
+// stock on hand and the rate while you are choosing, and it is the one
+// picker used everywhere inventory is selected.
+function ProductPicker({ items, value, onPick, placeholder = "— item chunein —", showStock = true }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const list = items || [];
+  const chosen = list.find((i) => i.id === value) || null;
+  const needle = q.trim().toLowerCase();
+  const shown = (needle
+    ? list.filter((i) =>
+        `${i.name || ""} ${i.sku || ""} ${i.parentName || ""} ${i.color || ""} ${i.size || ""} ${i.category || ""}`
+          .toLowerCase().includes(needle))
+    : list
+  ).slice(0, 60);
+
+  const detail = (i) => [i.parentName, i.color, i.size, i.sku].filter(Boolean).join(" · ");
+
+  return (
+    <div style={{ position: "relative", minWidth: 200 }}>
+      <button
+        type="button" onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 8, textAlign: "left",
+          background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 7,
+          padding: 6, color: COLORS.text, cursor: "pointer",
+        }}
+      >
+        <Thumb url={chosen ? (chosen.image || chosen.imageUrl) : null} size={38} />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {chosen ? chosen.name : placeholder}
+          </div>
+          {chosen && (
+            <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>
+              {detail(chosen)}{showStock ? `${detail(chosen) ? " · " : ""}stock ${Number(chosen.quantity || 0)}` : ""}
+            </div>
+          )}
+        </span>
+        <ChevronDown size={14} color={COLORS.textFaint} />
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute", zIndex: 50, left: 0, right: 0, marginTop: 4, minWidth: 280,
+            background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8,
+            padding: 8, boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
+          }}
+        >
+          <input
+            className="mn-input" autoFocus placeholder="Naam, SKU, rang ya design"
+            value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 8 }}
+          />
+          <div className="mn-scroll" style={{ maxHeight: 280, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+            {shown.length === 0 ? <EmptyRow text="Koi item nahi mila." /> : shown.map((i) => (
+              <button
+                key={i.id} type="button"
+                onClick={() => { onPick(i); setOpen(false); setQ(""); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 9, textAlign: "left", cursor: "pointer",
+                  background: i.id === value ? COLORS.surface2 : "none",
+                  border: `1px solid ${i.id === value ? COLORS.accent : COLORS.borderSoft}`,
+                  borderRadius: 7, padding: 6, color: COLORS.text,
+                }}
+              >
+                <Thumb url={i.image || i.imageUrl} size={40} />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5 }}>{i.name}</div>
+                  <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{detail(i) || "—"}</div>
+                </span>
+                <span style={{ textAlign: "right" }}>
+                  {showStock && (
+                    <div style={{ fontSize: 11, color: Number(i.quantity || 0) > 0 ? COLORS.textDim : COLORS.negative }}>
+                      {Number(i.quantity || 0)} pcs
+                    </div>
+                  )}
+                  <div className="mn-num" style={{ fontSize: 11, color: COLORS.textFaint }}>{fmt(i.price)}</div>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3923,22 +4016,14 @@ function SupplierReturnForm({ suppliers, inventory, notify, onCancel, onSaved })
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th></th><th>Item</th><th>Stock</th><th>Kitne wapis</th><th>Kharid rate</th><th>Value</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Stock</th><th>Kitne wapis</th><th>Kharid rate</th><th>Value</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => {
             const over = it.stock !== null && Number(it.qty) > it.stock;
             return (
               <tr key={it.key}>
-                <td><Thumb url={it.image} size={46} /></td>
-                <td style={{ minWidth: 200 }}>
-                  <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
-                    <option value="">— item chunein —</option>
-                    {(inventory || []).map((inv) => (
-                      <option key={inv.id} value={inv.id}>
-                        {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
-                      </option>
-                    ))}
-                  </select>
+                <td style={{ minWidth: 220 }}>
+                  <ProductPicker items={inventory || []} value={it.inventoryId} onPick={(inv) => pick(it.key, inv.id)} />
                 </td>
                 <td className="mn-num" style={{ color: COLORS.textFaint }}>{it.stock === null ? "—" : it.stock}</td>
                 <td>
@@ -4367,20 +4452,16 @@ function PurchaseForm({ suppliers, inventory, onCancel, onSaved, notify }) {
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th></th><th>Item</th><th>Name</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Name</th><th>SKU</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => (
             <tr key={it.key}>
-              <td><Thumb url={it.image} size={40} /></td>
-              <td style={{ minWidth: 160 }}>
-                <select className="mn-input" value={it.inventory_id} onChange={(e) => pickInventory(it.key, e.target.value)}>
-                  <option value="">+ New item</option>
-                  {inventory.map((inv) => (
-                    <option key={inv.id} value={inv.id}>
-                      {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
-                    </option>
-                  ))}
-                </select>
+              <td style={{ minWidth: 220 }}>
+                <ProductPicker
+                  items={inventory} value={it.inventory_id}
+                  placeholder="+ Naya item (naam neeche likhein)"
+                  onPick={(inv) => pickInventory(it.key, inv.id)}
+                />
               </td>
               <td><input className="mn-input" value={it.name} onChange={(e) => setItem(it.key, { name: e.target.value })} placeholder="Item name" /></td>
               <td><input className="mn-input" style={{ width: 100 }} value={it.sku} onChange={(e) => setItem(it.key, { sku: e.target.value })} /></td>
@@ -5059,22 +5140,17 @@ function ConsignmentForm({ inventory, affiliates, onCancel, onSaved, notify }) {
       </div>
 
       <div className="mn-tablewrap"><table className="mn-table">
-        <thead><tr><th></th><th>Item</th><th>Stock</th><th>Kitne diye</th><th>Rate</th><th>Value</th><th></th></tr></thead>
+        <thead><tr><th>Item</th><th>Stock</th><th>Kitne diye</th><th>Rate</th><th>Value</th><th></th></tr></thead>
         <tbody>
           {items.map((it) => {
             const over = it.stock !== null && Number(it.qty) > it.stock;
             return (
               <tr key={it.key}>
-                <td><Thumb url={it.image} size={46} /></td>
-                <td style={{ minWidth: 200 }}>
-                  <select className="mn-input" value={it.inventoryId} onChange={(e) => pick(it.key, e.target.value)}>
-                    <option value="">— item chunein —</option>
-                    {inventory.filter((inv) => Number(inv.quantity || 0) > 0).map((inv) => (
-                      <option key={inv.id} value={inv.id}>
-                        {inv.name}{[inv.size, inv.color].filter(Boolean).length ? ` (${[inv.size, inv.color].filter(Boolean).join(" ")})` : ""}
-                      </option>
-                    ))}
-                  </select>
+                <td style={{ minWidth: 220 }}>
+                  <ProductPicker
+                    items={inventory.filter((inv) => Number(inv.quantity || 0) > 0)}
+                    value={it.inventoryId} onPick={(inv) => pick(it.key, inv.id)}
+                  />
                 </td>
                 <td className="mn-num" style={{ color: COLORS.textFaint }}>{it.stock === null ? "—" : it.stock}</td>
                 <td>
