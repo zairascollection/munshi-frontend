@@ -1,17 +1,8 @@
 import { useState } from "react";
 import { login, setToken } from "./api";
+import { COLORS } from "./theme";
+import ThemeToggle from "./ThemeToggle";
 
-const COLORS = {
-  bg: "#0F161F",
-  surface: "#161F2A",
-  surface2: "#1D2A38",
-  border: "#26374A",
-  text: "#E9F0F6",
-  textDim: "#8CA0B3",
-  textFaint: "#5A7186",
-  accent: "#E8A33D",
-  negative: "#E2574C",
-};
 
 function LogoMark({ size = 44 }) {
   return (
@@ -76,6 +67,7 @@ export default function Login({ onLoggedIn }) {
         >
           {loading ? "Signing in..." : "Sign in"}
         </button>
+        <div style={{ marginTop: 14 }}><ThemeToggle /></div>
       </form>
     </div>
   );

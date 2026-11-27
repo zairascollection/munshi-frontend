@@ -8,6 +8,7 @@ import {
   MessageCircle, Truck as TruckIcon, PackagePlus, Factory, Menu, ShieldAlert, Check, Bell,
   PackageCheck, UserCheck, ChevronDown,
 } from "lucide-react";
+import ThemeToggle from "./ThemeToggle";
 import Login from "./Login";
 import { COLORS, CHART_COLORS, fmt } from "./theme";
 import { initialFormValues, diffForSync, createPayload, REMOVE_FILE, isTempId, duplicateNameWarning } from "./sync";
@@ -60,7 +61,7 @@ const amountDueOf = (o) => Math.max(0, Number(o.sell || 0) - Number(o.amountPaid
 
 // Bump this whenever a build goes out. It is shown in the sidebar so a
 // device running yesterday's app can be spotted in one look.
-const APP_BUILD = "2026-10-02d";
+const APP_BUILD = "2026-11-27a";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid, ownerOnly: false },
@@ -70,6 +71,7 @@ const NAV = [
   { id: "customers", label: "Customers", icon: BookUser, ownerOnly: false },
   { id: "employees", label: "Employees", icon: Users, ownerOnly: false },
   { id: "returns", label: "Returns", icon: Undo2, ownerOnly: false },
+  { id: "dayclose", label: "Day close", icon: CalendarDays, ownerOnly: true, managerOk: true },
   { id: "consignments", label: "Stock diya hua", icon: PackageCheck, ownerOnly: false },
   { id: "supplierReturns", label: "Wholesaler ko wapis", icon: Undo2, ownerOnly: true, managerOk: true },
   { id: "reports", label: "Reports", icon: BarChart3, ownerOnly: false },
@@ -90,7 +92,7 @@ const NAV = [
 // Sidebar sections — with 15 screens a flat list is hard to scan, so the
 // nav is grouped by what you're actually trying to do.
 const NAV_SECTIONS = [
-  { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers"] },
+  { title: "Daily kaam", ids: ["dashboard", "pos", "inventory", "orders", "returns", "customers", "dayclose"] },
   { title: "Stock aana / jana", ids: ["purchases", "suppliers", "consignments", "supplierReturns"] },
   { title: "Paisa", ids: ["profit", "monthly", "reports", "finance", "accounts", "expenses", "adspend"] },
   { title: "Log & settings", ids: ["employees", "affiliates", "team", "settings", "history"] },
@@ -373,24 +375,30 @@ export default function App() {
         .mn-scroll::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 4px; }
         .mn-input {
           background: ${COLORS.surface2}; border: 1px solid ${COLORS.border}; color: ${COLORS.text};
-          padding: 8px 10px; border-radius: 6px; font-size: 13px; font-family: inherit; width: 100%;
+          padding: 9px 11px; border-radius: 9px; font-size: 13px; font-family: inherit; width: 100%;
+          transition: border-color 0.15s ease, box-shadow 0.15s ease;
         }
-        .mn-input:focus { outline: none; border-color: ${COLORS.accent}; }
+        .mn-input:focus { outline: none; border-color: ${COLORS.accent}; box-shadow: 0 0 0 3px ${COLORS.accentDim}; }
         .mn-btn {
           display: inline-flex; align-items: center; gap: 6px; background: ${COLORS.accent}; color: #241804;
-          border: none; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
-          font-family: inherit;
+          border: none; padding: 9px 15px; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer;
+          font-family: inherit; transition: filter 0.15s ease, transform 0.1s ease;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.25);
         }
-        .mn-btn:hover { filter: brightness(1.08); }
+        .mn-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .mn-btn:active { transform: translateY(0); }
         .mn-btn-ghost {
           display: inline-flex; align-items: center; gap: 6px; background: transparent; color: ${COLORS.textDim};
-          border: 1px solid ${COLORS.border}; padding: 7px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
-          font-family: inherit;
+          border: 1px solid ${COLORS.border}; padding: 8px 13px; border-radius: 9px; font-size: 13px; cursor: pointer;
+          font-family: inherit; transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
         }
-        .mn-btn-ghost:hover { color: ${COLORS.text}; border-color: ${COLORS.textDim}; }
+        .mn-btn-ghost:hover { color: ${COLORS.text}; border-color: ${COLORS.textDim}; background: ${COLORS.surface2}; }
         .mn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .mn-table th { text-align: left; color: ${COLORS.textFaint}; font-weight: 500; font-size: 11.5px; letter-spacing: 0.02em; padding: 0 12px 8px; border-bottom: 1px solid ${COLORS.border}; }
-        .mn-table td { padding: 11px 12px; border-bottom: 1px solid ${COLORS.borderSoft}; }
+        .mn-table th { text-align: left; color: ${COLORS.textFaint}; font-weight: 600; font-size: 11.5px; letter-spacing: 0.03em; text-transform: uppercase; padding: 0 12px 10px; border-bottom: 1px solid ${COLORS.border}; }
+        .mn-table td { padding: 12px; border-bottom: 1px solid ${COLORS.borderSoft}; }
+        .mn-table tbody tr { transition: background 0.12s ease; }
+        .mn-table tbody tr:hover { background: ${COLORS.surface2}; }
+        .mn-table tr.mn-day-header:hover { background: none; }
         .mn-table tr:last-child td { border-bottom: none; }
         select.mn-input { appearance: none; }
         .mn-spin { animation: mn-spin 1s linear infinite; }
@@ -436,7 +444,7 @@ export default function App() {
           <>
             <div
               onClick={() => setNavOpen(false)}
-              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 40 }}
+              style={{ position: "fixed", inset: 0, background: "var(--mn-overlay)", zIndex: 40 }}
             />
             <div style={{ position: "fixed", top: 0, bottom: 0, left: 0, zIndex: 41, display: "flex" }}>
               <Sidebar tab={tab} setTab={setTab} metrics={metrics} role={role} user={user} onLogout={logout} onSync={runSync} syncing={syncing} onChangePassword={() => setChangingPw(true)} />
@@ -458,6 +466,7 @@ export default function App() {
           {tab === "consignments" && <Consignments inventory={data.inventory} affiliates={data.affiliates || []} orders={data.orders} notify={notify} role={role} reload={() => loadAll(role)} />}
           {tab === "customers" && <Customers orders={data.orders} notify={notify} role={role} />}
           {tab === "employees" && <Employees employees={data.employees} accounts={data.accounts || []} update={(fn) => update("employees", fn)} updateAccounts={(fn) => update("accounts", fn)} notify={notify} role={role} />}
+          {tab === "dayclose" && (role === "owner" || role === "manager") && <DayClose data={data} />}
           {tab === "reports" && <Reports data={data} role={role} />}
           {tab === "profit" && (role === "owner" || role === "manager") && <ProfitTracker notify={notify} />}
           {tab === "monthly" && (role === "owner" || role === "manager") && <MonthlySheet notify={notify} />}
@@ -514,6 +523,7 @@ function Sidebar({ tab, setTab, metrics, role, user, onLogout, onSync, syncing, 
       <button onClick={onChangePassword} style={{ background: "none", border: "none", color: COLORS.textFaint, cursor: "pointer", fontSize: 11, textAlign: "left", padding: "2px 8px 12px", textDecoration: "underline" }}>
         Change password
       </button>
+      <div style={{ padding: "0 0 12px" }}><ThemeToggle /></div>
       {role === "owner" && (
         <button
           onClick={onSync} disabled={syncing} className="mn-btn-ghost"
@@ -2112,7 +2122,7 @@ function ChangePasswordForm({ onClose, notify }) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+    <div style={{ position: "fixed", inset: 0, background: "var(--mn-overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
       <form onSubmit={submit} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 26, width: 300 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <span style={{ fontSize: 14, fontWeight: 600 }}>Change password</span>
@@ -2340,6 +2350,10 @@ function AuditLogPanel({ notify }) {
         <option value="affiliates">Affiliates</option>
         <option value="accounts">Accounts</option>
         <option value="settings">Cost settings</option>
+        <option value="consignments">Stock diya gaya</option>
+        <option value="purchases">Purchases</option>
+        <option value="supplier_returns">Wholesaler ko wapis</option>
+        <option value="customers">Customers</option>
       </select>
       <select className="mn-input" style={{ width: 130 }} value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
         <option value="">Sab kuch</option>
@@ -2354,8 +2368,37 @@ function AuditLogPanel({ notify }) {
     </div>
   );
 
+  // The owner's whole ask for this screen is "date wise sab kuch maintain
+  // ho" — a day-by-day business diary, not a flat change log. Entries
+  // already arrive newest-first, so grouping them by calendar day and
+  // dropping in one sticky header row per day turns the same data into
+  // "26 Nov: 3 bills, 1 return, 2 inventory changes" at a glance.
+  const grouped = useMemo(() => {
+    if (!entries) return [];
+    const days = [];
+    let current = null;
+    for (const e of entries) {
+      const day = String(e.changed_at).slice(0, 10);
+      if (!current || current.day !== day) {
+        current = { day, rows: [] };
+        days.push(current);
+      }
+      current.rows.push(e);
+    }
+    return days;
+  }, [entries]);
+
+  const dayLabel = (iso) => {
+    const d = new Date(`${iso}T00:00:00`);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const yday = new Date(today); yday.setDate(yday.getDate() - 1);
+    if (iso === today.toISOString().slice(0, 10)) return "Aaj";
+    if (iso === yday.toISOString().slice(0, 10)) return "Kal";
+    return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  };
+
   return (
-    <Panel title="History" count={entries ? `${entries.length} changes` : "Loading..."} extra={filters}>
+    <Panel title="History — Date Wise" count={entries ? `${entries.length} changes` : "Loading..."} extra={filters}>
       {!entries ? (
         <EmptyRow text="Loading..." />
       ) : entries.length === 0 ? (
@@ -2364,49 +2407,116 @@ function AuditLogPanel({ notify }) {
         <div className="mn-tablewrap"><table className="mn-table">
           <thead><tr><th>When</th><th>Record</th><th>What</th><th>Old value</th><th>New value</th><th>Changed by</th></tr></thead>
           <tbody>
-            {entries.map((e) => {
-              const action = ACTION_STYLE[e.field];
-              return (
-                <tr key={e.id}>
-                  <td style={{ color: COLORS.textFaint, fontSize: 12, whiteSpace: "nowrap" }}>
-                    {String(e.changed_at).slice(0, 16).replace("T", " ")}
+            {grouped.map((group) => (
+              <Fragment key={group.day}>
+                <tr className="mn-day-header">
+                  <td colSpan={6} style={{
+                    background: COLORS.accentDim,
+                    color: COLORS.accent, fontWeight: 700, fontSize: 12.5,
+                    padding: "7px 10px", borderTop: `1px solid ${COLORS.border}`,
+                  }}>
+                    {dayLabel(group.day)} <span style={{ color: COLORS.textFaint, fontWeight: 500 }}>· {group.rows.length} activity</span>
                   </td>
-                  <td>
-                    {/* The photo makes an inventory line recognisable at a
-                        glance — far faster than decoding a SKU. */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {e.resource === "inventory" && <Thumb url={e.image_url} size={30} />}
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {e.record_label || String(e.record_id || "").slice(0, 8)}
-                        </div>
-                        <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{e.resource}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td style={{ color: action ? action.color : COLORS.textDim, fontWeight: action ? 600 : 400 }}>
-                    {action ? action.label : e.field}
-                  </td>
-                  {action ? (
-                    // Added / Deleted have no before-and-after; the summary of
-                    // what the record held spans both value columns.
-                    <td colSpan={2} style={{ fontSize: 12, color: COLORS.textDim }}>
-                      {e.new_value || e.old_value || "—"}
-                    </td>
-                  ) : (
-                    <>
-                      <td className="mn-num" style={{ color: COLORS.negative }}>{e.old_value || "—"}</td>
-                      <td className="mn-num" style={{ color: COLORS.positive }}>{e.new_value || "—"}</td>
-                    </>
-                  )}
-                  <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.changed_by}</td>
                 </tr>
-              );
-            })}
+                {group.rows.map((e) => {
+                  const action = ACTION_STYLE[e.field];
+                  return (
+                    <tr key={e.id}>
+                      <td style={{ color: COLORS.textFaint, fontSize: 12, whiteSpace: "nowrap" }}>
+                        {String(e.changed_at).slice(11, 16)}
+                      </td>
+                      <td>
+                        {/* The photo makes an inventory line recognisable at a
+                            glance — far faster than decoding a SKU. */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {e.resource === "inventory" && <Thumb url={e.image_url} size={30} />}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {e.record_label || String(e.record_id || "").slice(0, 8)}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: COLORS.textFaint }}>{e.resource}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td style={{ color: action ? action.color : COLORS.textDim, fontWeight: action ? 600 : 400 }}>
+                        {action ? action.label : e.field}
+                      </td>
+                      {action ? (
+                        // Added / Deleted have no before-and-after; the summary of
+                        // what the record held spans both value columns.
+                        <td colSpan={2} style={{ fontSize: 12, color: COLORS.textDim }}>
+                          {e.new_value || e.old_value || "—"}
+                        </td>
+                      ) : (
+                        <>
+                          <td className="mn-num" style={{ color: COLORS.negative }}>{e.old_value || "—"}</td>
+                          <td className="mn-num" style={{ color: COLORS.positive }}>{e.new_value || "—"}</td>
+                        </>
+                      )}
+                      <td style={{ color: COLORS.textFaint, fontSize: 12 }}>{e.changed_by}</td>
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            ))}
           </tbody>
         </table></div>
       )}
     </Panel>
+  );
+}
+
+// Day close — the end-of-day check. Everything here is read from data the
+// app already has: that day's bills, returns and expenses. The owner types
+// in the cash actually counted and the screen shows the gap, so a missed
+// entry or a wrong amount is caught the same evening, not at month end.
+function DayClose({ data }) {
+  const todayStr = () => new Date().toLocaleDateString("en-CA");
+  const [day, setDay] = useState(todayStr());
+  const [counted, setCounted] = useState("");
+  const dOf = (v) => (v ? String(v).slice(0, 10) : "");
+  const s = useMemo(() => {
+    const orders = (data.orders || []).filter((o) => dOf(o.date) === day && o.status !== "Returned");
+    const returns = (data.orders || []).filter((o) => o.status === "Returned" && dOf(o.returnedAt || o.date) === day);
+    const expenses = (data.expenses || []).filter((x) => dOf(x.date) === day);
+    const sales = orders.reduce((t, o) => t + Number(o.sell || 0), 0);
+    const received = orders.reduce((t, o) => t + Number(o.amountPaid || 0), 0);
+    const udhar = Math.max(0, sales - received);
+    const spent = expenses.reduce((t, x) => t + Number(x.amount || 0), 0);
+    const refunded = returns.reduce((t, o) => t + Number(o.refundAmount || 0), 0);
+    const byStaff = {};
+    orders.forEach((o) => { const k = o.billedBy || o.soldBy || "—"; byStaff[k] = (byStaff[k] || 0) + Number(o.sell || 0); });
+    return { orders, returns, expenses, sales, received, udhar, spent, refunded, expected: received - spent - refunded, byStaff };
+  }, [data.orders, data.expenses, day]);
+  const diff = counted === "" ? null : Number(counted) - s.expected;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Panel title="Day close" count={day} extra={
+        <input type="date" className="mn-input" style={{ width: 160 }} value={day} onChange={(e) => setDay(e.target.value || todayStr())} />
+      }>
+        <div className="mn-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, padding: 16 }}>
+          <StatCard label="Aaj ki sale" value={fmt(s.sales)} sub={`${s.orders.length} bills`} />
+          <StatCard label="Wasool hua" value={fmt(s.received)} sub={s.udhar > 0 ? `Udhar baqi: ${fmt(s.udhar)}` : "Koi udhar nahi"} tone="positive" />
+          <StatCard label="Kharcha" value={fmt(s.spent)} sub={`${s.expenses.length} entries`} tone={s.spent > 0 ? "negative" : undefined} />
+          <StatCard label="Returns" value={s.returns.length} sub={s.refunded ? `Refund: ${fmt(s.refunded)}` : "Refund nahi"} tone={s.returns.length ? "negative" : undefined} />
+          <StatCard label="Cash hona chahiye" value={fmt(s.expected)} sub="wasool − kharcha − refund" />
+          <StatCard label="Farq" value={diff === null ? "—" : fmt(diff)} sub={diff === null ? "Neeche cash likhein" : diff === 0 ? "Hisaab barabar" : diff > 0 ? "Zyada cash hai" : "Cash kam hai"} tone={diff === null ? undefined : diff === 0 ? "positive" : "negative"} />
+        </div>
+        <div style={{ padding: "0 16px 16px", maxWidth: 320 }}>
+          <label style={{ fontSize: 11.5, color: COLORS.textFaint, display: "block", marginBottom: 4 }}>Gin kar asli cash (Rs)</label>
+          <input className="mn-input" type="number" value={counted} onChange={(e) => setCounted(e.target.value)} placeholder="Drawer mein kitna cash hai" />
+        </div>
+      </Panel>
+      <Panel title="Staff ke hisaab se bills" count={Object.keys(s.byStaff).length}>
+        {Object.keys(s.byStaff).length === 0 ? <EmptyRow text="Is din koi bill nahi bana." /> : (
+          <div className="mn-tablewrap"><table className="mn-table">
+            <thead><tr><th>Staff</th><th>Sale</th></tr></thead>
+            <tbody>{Object.entries(s.byStaff).map(([k, v]) => <tr key={k}><td>{k}</td><td className="mn-num">{fmt(v)}</td></tr>)}</tbody>
+          </table></div>
+        )}
+      </Panel>
+    </div>
   );
 }
 
